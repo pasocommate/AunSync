@@ -59,13 +59,16 @@ namespace ods::widgets {
 
 			int replaced_count = 0;
 			for (const auto &ph : found) {
-				// ペイロード: HCALLOUT|<escaped_text>
+				// ペイロード: HCALLOUT|<variant>|<escaped_text>
 				QStringList fields;
 				if (!split_escaped_pipe_fields(ph.text, fields))
 					continue;
-				if (fields.size() < 2 || fields[0] != QLatin1String("HCALLOUT"))
+				if (fields.size() < 3 || fields[0] != QLatin1String("HCALLOUT"))
 					continue;
-				const QString callout_text = fields[1];
+				int variant_i = fields[1].toInt();
+				if (variant_i < 0 || variant_i > 2) variant_i = 0;
+				const auto    variant      = static_cast<CalloutVariant>(variant_i);
+				const QString callout_text = fields[2];
 				if (callout_text.isEmpty())
 					continue;
 
@@ -79,7 +82,7 @@ namespace ods::widgets {
 				form->getWidgetPosition(ph.label, &row, &role);
 				if (row < 0) continue;
 
-				auto *callout = create_help_callout(callout_text, parent);
+				auto *callout = create_help_callout(callout_text, parent, variant);
 				form->removeRow(row);
 				form->insertRow(row, callout);
 				++replaced_count;
@@ -101,11 +104,15 @@ namespace ods::widgets {
 	obs_property_t *obs_properties_add_help_callout(
 		obs_properties_t *props,
 		const char       *prop_name,
-		const char       *text) {
+		const char       *text,
+		CalloutVariant    variant) {
 		if (!props || !prop_name || !*prop_name)
 			return nullptr;
 
+		// ペイロード: HCALLOUT|<variant>|<escaped_text>
 		std::string payload = "HCALLOUT";
+		payload += '|';
+		payload += std::to_string(static_cast<int>(variant));
 		payload += '|';
 		payload += escape_field(text ? text : "");
 

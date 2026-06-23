@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/constants.hpp"
+#include "widgets/help-callout-widget.hpp"
 
 #include <QAbstractScrollArea>
 #include <QColor>
@@ -106,7 +107,7 @@ namespace ods::widgets {
 	}
 
 	/// テーマ追従する左ボーダー付きヘルプコールアウト QLabel を生成する。
-	inline QLabel *create_help_callout(const QString &text, QWidget *parent) {
+	inline QLabel *create_help_callout(const QString &text, QWidget *parent, CalloutVariant variant = CalloutVariant::Info) {
 		auto *help = new QLabel(text, parent);
 		help->setTextFormat(Qt::RichText);
 		help->setWordWrap(true);
@@ -114,15 +115,30 @@ namespace ods::widgets {
 		hf.setPixelSize(11);
 		help->setFont(hf);
 
-		const QPalette pal    = parent->palette();
-		const QColor   accent = pal.color(QPalette::Highlight);
-		const QColor   base   = pal.color(QPalette::Window);
-		const QColor   bg(
-			base.red() + (accent.red() - base.red()) * 10 / 100,
-			base.green() + (accent.green() - base.green()) * 10 / 100,
-			base.blue() + (accent.blue() - base.blue()) * 10 / 100);
+		const QPalette pal = parent->palette();
+		QColor         accent;
+		switch (variant) {
+		case CalloutVariant::Warning:
+			accent = QColor(0xF5, 0x9E, 0x0B); // amber #f59e0b
+			break;
+		case CalloutVariant::Error:
+			accent = QColor(0xEF, 0x44, 0x44); // red #ef4444
+			break;
+		case CalloutVariant::Info:
+		default:
+			accent = pal.color(QPalette::Highlight);
+			break;
+		}
+		const bool   emphatic = (variant != CalloutVariant::Info);
+		const int    tintPct  = emphatic ? 16 : 10; // 警告/エラーは背景・枠を強めて視認性を上げる
+		const int    borderPx = emphatic ? 4 : 3;
+		const QColor base     = pal.color(QPalette::Window);
+		const QColor bg(
+			base.red() + (accent.red() - base.red()) * tintPct / 100,
+			base.green() + (accent.green() - base.green()) * tintPct / 100,
+			base.blue() + (accent.blue() - base.blue()) * tintPct / 100);
 		QColor border = accent;
-		border.setAlpha(160);
+		border.setAlpha(emphatic ? 220 : 160);
 		QColor fg = pal.color(QPalette::Text);
 		fg.setAlpha(190);
 
@@ -131,13 +147,14 @@ namespace ods::widgets {
 				"QLabel {"
 				" background-color: %1;"
 				" border: none;"
-				" border-left: 3px solid %2;"
+				" border-left: %4px solid %2;"
 				" padding: 6px 10px;"
 				" color: %3;"
 				"}")
 				.arg(bg.name(QColor::HexArgb),
 					 border.name(QColor::HexArgb),
-					 fg.name(QColor::HexArgb)));
+					 fg.name(QColor::HexArgb),
+					 QString::number(borderPx)));
 		return help;
 	}
 
