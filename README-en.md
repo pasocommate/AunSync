@@ -1,4 +1,4 @@
-# obs-delay-stream  v8.0.0
+# obs-delay-stream  v8.1.0
 
 **VRChat Dancer/Music Performer Support Tool [obs-delay-stream]**
 
