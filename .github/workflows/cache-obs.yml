@@ -104,6 +104,10 @@ jobs:
         shell: pwsh
         run: |
           Set-Location third_party/obs-studio
+          if ('${{ steps.obs-cache.outputs.cache-hit }}' -ne 'true' -and (Test-Path build_x64)) {
+            Write-Host "Fallback cache restored: removing stale build_x64 to avoid VS generator mismatch"
+            Remove-Item -Recurse -Force build_x64
+          }
           cmake --preset windows-x64
           cmake --build --preset windows-x64 --config RelWithDebInfo --parallel
 
