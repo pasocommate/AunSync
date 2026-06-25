@@ -38,7 +38,7 @@ Built-in IP-hiding tunnel support.
 | URL Sharing | View and copy all performer URLs at once. Reduces the hassle and risk of distribution errors. |
 | WS Measurement | Auto-measure WebSocket delivery latency for all connected performers. Also supports auto-measurement on performer connect. |
 | RTSP Measurement | Measure OBS broadcast (RTSP E2E) latency. Choose between Silent and Mix measurement modes. |
-| Fine Tune | Per-channel environment latency settings and overall delay diagram. Also configure estimated avatar latency here. |
+| Fine Tune | Per-channel environment latency settings and overall delay diagram. Also configure estimated avatar latency, and the local live-performance sync adjustment (lead time), here. |
 
 ---
 
