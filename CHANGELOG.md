@@ -1,6 +1,6 @@
 # Changelog
 
-## v8.1.1 — 2026-06-25
+## v8.1.2 — 2026-06-25
 
 ### 新機能
 
@@ -15,6 +15,8 @@
 ### ビルド・配布
 
 - **CIビルド修正** — `windows-latest` ランナーの VS 2026 更新に対応し、CMake ジェネレーターを `Visual Studio 18 2026` に変更
+- **GitHub Actions を Node 24 ネイティブ版へ統一** — setup-node v6 / cache v6 / upload-artifact v7 / checkout v7 へ更新し、移行用フラグ `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24` を削除
+- **依存関係更新** — vite 8.0.16 / i18next 26.3.1 / typescript 6.0.3 / postcss 8.5.15
 
 ## v8.0.0 — 2026-04-20
 
