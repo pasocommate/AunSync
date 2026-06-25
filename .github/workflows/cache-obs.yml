@@ -5,9 +5,6 @@ on:
     - cron: "0 2 * * 0"  # 毎週日曜 02:00 UTC
   workflow_dispatch:
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   cache-obs:
     runs-on: windows-latest
@@ -40,7 +37,7 @@ jobs:
 
       - name: Restore OBS build cache
         id: obs-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: |
             third_party/obs-studio/build_x64
@@ -113,7 +110,7 @@ jobs:
 
       - name: Save OBS build cache
         if: success() && steps.obs-build-check.outputs.skip != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: |
             third_party/obs-studio/build_x64
