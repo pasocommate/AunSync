@@ -56,7 +56,8 @@ struct DelayState {
     int  measured_rtsp_e2e_ms;
     int  avatar_latency_ms;
     int  playback_buffer_ms;
-    int  sub_ch_count;
+    bool live_perf_enabled;  // ローカル生演奏調整の有効フラグ
+    int  lead_time_ms;       // 先行時間（配信チャンネルに対する先行量）
     std::array<ChDelay, MAX_SUB_CH> channels; // measured_ms, ws_measured, offset_ms
     DelaySnapshot calc_all_delays() const;
 };
@@ -64,9 +65,14 @@ struct DelayState {
 // 計算結果（不変）
 struct DelaySnapshot {
     std::array<ChDelay, MAX_SUB_CH> channels; // raw_ms, total_ms, has_measurement, warn
-    int neg_max_ms;
-    int master_delay_ms;
-    int active_count;
+    int  neg_max_ms;
+    int  master_delay_ms;
+    int  active_count;
+    // ローカル生演奏: 成否と内訳
+    //   live_perf_ok / live_extra_ms / live_min_lead_ms /
+    //   live_service_too_slow / live_lead_too_short
+    bool live_perf_ok;
+    int  live_extra_ms;
 };
 ```
 
@@ -109,16 +115,22 @@ public:
 
 ### 2.3 DelayViewModel (`src/viewmodel/delay-viewmodel.hpp`)
 
-**遅延タブ UI 用の読み取り専用スナップショット**。
+**微調整タブ UI 用の読み取り専用スナップショット**。
 
 ```cpp
 struct DelayViewModel {
-    struct ChDisplay { name, measured_ms, offset_ms, raw_delay_ms, neg_max_ms, total_ms, warn };
+    struct ChDisplay { name, measured_ms, offset_ms, total_ms, provisional, slot };
     DelaySnapshot          snapshot;
     std::vector<ChDisplay> channels;
     int                    selected_ch;
+    int                    rtsp_e2e_ms, avatar_latency_ms, playback_buffer_ms;
+    // ローカル生演奏（snapshot から転写）
+    bool                   live_perf_enabled, live_perf_ok;
+    int                    live_extra_ms, live_min_lead_ms, lead_time_ms;
+    bool                   live_service_too_slow, live_lead_too_short;
 
-    static DelayViewModel build(const DelayState &delay, obs_data_t *settings);
+    static DelayViewModel build(const DelayState &delay, obs_data_t *settings,
+                                const ChannelLayout &layout);
 };
 ```
 
@@ -140,6 +152,7 @@ obs_data_t 変更 (OBS update コールバック)
     → recalc_all_delays(d)
       → d->delay.calc_all_delays()  → DelaySnapshot
       → 各 DelayBuffer へ total_ms を適用
+        （生演奏成立時は master_buf へは適用せず 0。配信側へ手動同期オフセットを案内）
 ```
 
 ### 3.2 計測完了 → 設定書き戻し → ディレイ反映
@@ -159,11 +172,14 @@ obs_data_t 変更 (OBS update コールバック)
 ```
 get_properties(d)
   → アクティブタブに応じて分岐
-  → case 5 (遅延タブ):
+  → case 6 (微調整タブ):
       obs_data_t *s = obs_source_get_settings(d->context);
-      DelayViewModel vm = DelayViewModel::build(d->delay, s);
+      DelayViewModel vm = DelayViewModel::build(d->delay, s, d->layout);
       obs_data_release(s);
-      add_delay_summary_group(props, vm);  // const 参照のみ
+      // いずれも vm を const 参照で受け取り読み取り専用で構築
+      add_fine_tune_group(props, d, vm);
+      add_live_perf_group(props, d, vm);
+      add_delay_diagram_group(props, d, vm);
 ```
 
 ---
@@ -218,7 +234,7 @@ get_properties(d)
 
 ## 5. UI 改修チェックリスト
 
-### 5.1 遅延タブ (tab 5) の改修
+### 5.1 微調整タブ (tab 6) の改修
 
 1. 表示データは **必ず `DelayViewModel` 経由**で取得する
 2. `DelayStreamData` を直接参照しない
@@ -298,7 +314,7 @@ OBS はプロパティダイアログ構築時にも modified callback を呼ぶ
 
 ## 8. 将来の拡張方針
 
-現在 ViewModel が導入されているのは遅延タブ (tab 5) のみ。
+現在 ViewModel が導入されているのは微調整タブ (tab 6) のみ。
 他のタブ（ネットワーク、トンネル等）の複雑度が上がった場合は、同じパターンで ViewModel を導入する:
 
 1. `src/viewmodel/` に `XxxViewModel` を作成

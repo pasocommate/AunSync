@@ -24,7 +24,7 @@ namespace ods::model {
 		};
 		std::array<ChDelay, MAX_SUB_CH> channels{};
 		int                             neg_max_ms            = 0;     ///< 負値 raw の最大絶対値
-		int                             master_delay_ms       = 0;     ///< OBS 出力へのディレイ = neg_max
+		int                             master_delay_ms       = 0;     ///< 自動調整ディレイ = neg_max（生演奏成立時は +live_extra、本線へは未適用）
 		int                             active_count          = 0;     ///< 計算対象チャンネル数
 		bool                            live_perf_enabled     = false; ///< ローカル生演奏調整が有効か
 		bool                            live_perf_ok          = false; ///< 生演奏調整が成立しているか
@@ -118,6 +118,14 @@ namespace ods::model {
 			snap.master_delay_ms   = snap.neg_max_ms;
 			snap.live_perf_enabled = live_perf_enabled;
 			snap.live_lead_ms      = lead_time_ms;
+			// ローカル生演奏調整: ローカル演奏者はソースをリアルタイムに聴くため、その聴取タイミングには
+			// ディレイをかけられない（調整不能）。プラグイン挿入ch（共演者向けWS配信専用の先行ch）は
+			// 配信chより lead_time_ms 先行給餌される前提で、調整できないローカル聴取へ共演者を合わせる。
+			//   min_lead   = 共演者が聴くタイミング(= neg_max + R - A)。Lead はこれ以上必要。
+			//   live_extra = Lead - min_lead を共演者向けWSチャンネルディレイへ加算してローカル聴取に揃える。
+			//   R > A は解決不能: 配信は生演奏(リアルタイム信号)を乗せるため、配信に要する追加オフセット
+			//                     (A-R)を負(前倒し)にできない。先行時間では救えず低遅延な配信サービスが必要。
+			// 設計の詳細・図解・運用上の注意は docs/live-performance.md を参照。
 			if (live_perf_enabled) {
 				snap.live_min_lead_ms      = snap.neg_max_ms + R - A;
 				snap.live_service_too_slow = R > A;

@@ -15,7 +15,7 @@ namespace ods::widgets {
 		int  A;            ///< アバターレイテンシ (ms)
 		int  buf;          ///< 再生バッファ (ms)
 		int  ch_count;     ///< チャンネル数
-		int  master_delay; ///< OBS 出力ディレイ = neg_max (ms)
+		int  master_delay; ///< 自動調整ディレイ = neg_max（生演奏成立時は +live_extra）(ms)
 		bool live_perf;    ///< ローカル生演奏の絶対時間軸を表示するか
 		bool live_ok;      ///< 生演奏調整が成立しているか（配信レーンを先行時間分ずらす）
 		int  lead_ms;      ///< ローカル音源の先行時間 (ms)
