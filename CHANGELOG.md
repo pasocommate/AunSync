@@ -1,5 +1,18 @@
 # Changelog
 
+## v8.2.0 — 2026-06-27
+
+### 修正
+
+- **配布ビルドがロードできない不具合を修正** — v8.1.2 の配布物が、OBS 同梱 FFmpeg の世代（avcodec-62）とプラグインのリンク先（avcodec-61）の不一致でロードできなかった問題を解消。Opus エンコードを FFmpeg から libopus（静的リンク）+ libobs リサンプラへ置換し、OBS 同梱 FFmpeg の世代に依存せずロードできるようにした
+- **低レイテンシ再生時の音切れ・音飛びを改善** — 受信側の再生を AudioWorklet + SharedArrayBuffer リングへ移し、ブラウザのメインスレッド一時停止（GC 等）に影響されず低レイテンシで安定再生できるようにした
+
+### ビルド・配布
+
+- libopus(v1.5.2) を vendoring して静的リンク化（avcodec/avutil/swresample のリンクを削除）
+- サポート下限 OBS バージョンを `OBS_STUDIO_REF`（32.0.4）で固定し、FFmpeg 非依存を CI で検証
+- 受信ページ配信に TCP_NODELAY と COOP/COEP ヘッダを追加（SharedArrayBuffer 有効化）
+
 ## v8.1.2 — 2026-06-25
 
 ### 新機能

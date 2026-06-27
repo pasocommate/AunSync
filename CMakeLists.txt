@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(obs-delay-stream VERSION 8.1.2)
+project(obs-delay-stream VERSION 8.2.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
