@@ -208,7 +208,7 @@ jobs:
             ${{ runner.os }}-obs-build-ref-${{ env.OBS_STUDIO_REF }}-sha-${{ steps.obs.outputs.sha }}-sdk-
             ${{ runner.os }}-obs-build-ref-${{ env.OBS_STUDIO_REF }}-sha-${{ steps.obs.outputs.sha }}-
 
-      - name: Patch OBS SDK version
+      - name: Patch OBS preset (SDK / generator)
         shell: pwsh
         run: |
           Set-Location third_party/obs-studio
@@ -217,6 +217,11 @@ jobs:
           $raw = Get-Content $presetPath -Raw
           $patched = $raw.Replace("10.0.22621.0", $env:WINSDK_VERSION)
           if ($raw -eq $patched) { Write-Host "No preset SDK version to replace." }
+          # OBS の preset はジェネレーターを "Visual Studio 17 2022" に固定しているが、
+          # windows-latest ランナーは VS 2026 のみのため、プラグイン側と同じ VS 2026 へ揃える。
+          $genBefore = $patched
+          $patched = $patched.Replace("Visual Studio 17 2022", "Visual Studio 18 2026")
+          if ($genBefore -eq $patched) { Write-Host "No preset generator to replace." }
           $patched | Set-Content $presetPath -Encoding UTF8
 
       - name: Check OBS build outputs
