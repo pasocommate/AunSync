@@ -15,7 +15,13 @@ import {
   safeParseJson,
 } from './types';
 import { buildUrl, clearConnectTimer, resync } from './ui';
-import { ensureAudioContext, handlePcm16 } from './audio';
+import {
+  ensureAudioContext,
+  handlePcm16,
+  onPlaybackBufferChanged,
+  ringActive,
+  resetPlayback,
+} from './audio';
 import { handleOpus, sendPcmFallbackIfPossible } from './opus';
 import { bus } from './bus';
 
@@ -90,7 +96,10 @@ function handleControl(text: string): void {
         const clamped = Math.min(PLAYBACK_BUFFER_MAX_MS, Math.max(PLAYBACK_BUFFER_MIN_MS, raw));
         const prev = state.playbackBuffer;
         state.playbackBuffer = clamped / 1000;
-        if (Math.abs(state.playbackBuffer - prev) > 0.001) resync();
+        if (Math.abs(state.playbackBuffer - prev) > 0.001) {
+          if (ringActive()) onPlaybackBufferChanged();
+          else resync();
+        }
       }
       break;
   }
@@ -111,7 +120,7 @@ export function connect(): void {
     return;
   }
   state.playbackBuffer = PLAYBACK_BUFFER_DEFAULT;
-  state.nextTime = 0;
+  resetPlayback();
 
   const sid = state.streamId;
   const code = state.channelCode;

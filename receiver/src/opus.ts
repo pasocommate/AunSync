@@ -12,7 +12,13 @@ import type {
   OpusPacket,
   WindowWithOpusDecoder,
 } from './types';
-import { playBuffer, updateAudioInfo, ensureAudioContext } from './audio';
+import {
+  playBuffer,
+  updateAudioInfo,
+  ensureAudioContext,
+  pushAudioData,
+  pushDecodedPlanar,
+} from './audio';
 import { setCodecLabel, setStatus } from './ui';
 import { t } from './i18n';
 
@@ -226,10 +232,11 @@ function decodeOpusPacketWebCodecs(
 
 function onOpusDecoded(ad: AudioDataLike): void {
   ensureAudioContext(ad.sampleRate);
-  const abuf = audioDataToBuffer(ad);
-  if (abuf) {
-    setCodecLabel('Opus');
-    playBuffer(abuf);
+  setCodecLabel('Opus');
+  // AudioWorklet 経路が有効ならリングへ直接書き込む（AudioBuffer 生成を回避）。
+  if (!pushAudioData(ad)) {
+    const abuf = audioDataToBuffer(ad);
+    if (abuf) playBuffer(abuf);
   }
   ad.close();
 }
@@ -395,6 +402,9 @@ function decodeOpusPacketWasm(
 
   const outRate = decoded.sampleRate || sampleRate;
   const outCh = decoded.channelData.length || channels;
+  setCodecLabel('Opus (WASM)');
+  // AudioWorklet 経路が有効ならリングへ直接書き込む。
+  if (pushDecodedPlanar(decoded.channelData, decoded.samplesDecoded, outCh)) return;
   const abuf = state.actx.createBuffer(
     outCh,
     decoded.samplesDecoded,
@@ -407,7 +417,6 @@ function decodeOpusPacketWasm(
       out.set(src.subarray(0, decoded.samplesDecoded));
     else out.set(src);
   }
-  setCodecLabel('Opus (WASM)');
   playBuffer(abuf);
 }
 

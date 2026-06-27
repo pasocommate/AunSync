@@ -32,6 +32,7 @@ import type {
 } from './types';
 import { isRecord, isConfigResponse, isMemoResponse } from './types';
 import { scheduleSustain } from './sustain';
+import { recenterRing } from './audio';
 
 // ============================================================
 // ステータスバー
@@ -589,6 +590,18 @@ export function showTimingDiagram(r: TimingDiagramMessage): void {
 export function resync(): void {
   if (state.currentSyncInterval > 0) {
     startAutoSync(state.currentSyncInterval);
+  }
+
+  // AudioWorklet 再生時はリングを目標まで切り詰めて再同期する（メインスレッド非依存）。
+  if (recenterRing()) {
+    if (state.pingCount === 0) {
+      setStatus(t('status.resynced'), 'ok');
+      setTimeout(() => {
+        if (state.ws && state.ws.readyState === WebSocket.OPEN && state.pingCount === 0)
+          setStatus(t('status.receiving'), 'ok');
+      }, RESYNC_DISPLAY_MS);
+    }
+    return;
   }
 
   if (!state.actx) return;

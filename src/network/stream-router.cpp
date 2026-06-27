@@ -27,6 +27,14 @@ namespace ods::network {
 			srv->set_access_channels(websocketpp::log::alevel::none);
 			srv->init_asio();
 			srv->set_reuse_addr(true);
+			// TCP_NODELAY（Nagle 無効化）。小さな Opus パケットが TCP に溜め込まれて
+			// まとめて送られる（ストール→バースト）と、受信側バッファが膨張し、
+			// 自動再同期がその余剰を切り詰めて音飛びになる。リアルタイム配信では必須。
+			srv->set_socket_init_handler(
+				[](ConnectionHandle, websocketpp::lib::asio::ip::tcp::socket &s) {
+					websocketpp::lib::asio::error_code ec;
+					s.set_option(websocketpp::lib::asio::ip::tcp::no_delay(true), ec);
+				});
 			srv->set_open_handler([this](ConnectionHandle h) { on_open(h); });
 			srv->set_close_handler([this](ConnectionHandle h) { on_close(h); });
 			srv->set_message_handler([this](ConnectionHandle h, WsServer::message_ptr m) {
@@ -914,6 +922,12 @@ namespace ods::network {
 		if (!srv) return;
 		try {
 			auto con = srv->get_con_from_hdl(h);
+			// cross-origin isolation: 受信ページで SharedArrayBuffer を使う（AudioWorklet
+			// へのリングバッファ共有）ために必須。全アセットは同一オリジン配信なので
+			// COEP require-corp 下でも読み込める。
+			con->replace_header("Cross-Origin-Opener-Policy", "same-origin");
+			con->replace_header("Cross-Origin-Embedder-Policy", "require-corp");
+			con->replace_header("Cross-Origin-Resource-Policy", "same-origin");
 			std::string raw  = con->get_resource();
 			std::string path = raw;
 			std::string query;
