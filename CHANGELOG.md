@@ -2,19 +2,6 @@
 
 ## v8.2.0 — 2026-06-27
 
-### 修正
-
-- **配布ビルドがロードできない不具合を修正** — v8.1.2 の配布物が、OBS 同梱 FFmpeg の世代（avcodec-62）とプラグインのリンク先（avcodec-61）の不一致でロードできなかった問題を解消。Opus エンコードを FFmpeg から libopus（静的リンク）+ libobs リサンプラへ置換し、OBS 同梱 FFmpeg の世代に依存せずロードできるようにした
-- **低レイテンシ再生時の音切れ・音飛びを改善** — 受信側の再生を AudioWorklet + SharedArrayBuffer リングへ移し、ブラウザのメインスレッド一時停止（GC 等）に影響されず低レイテンシで安定再生できるようにした
-
-### ビルド・配布
-
-- libopus(v1.5.2) を vendoring して静的リンク化（avcodec/avutil/swresample のリンクを削除）
-- サポート下限 OBS バージョンを `OBS_STUDIO_REF`（32.0.4）で固定し、FFmpeg 非依存を CI で検証
-- 受信ページ配信に TCP_NODELAY と COOP/COEP ヘッダを追加（SharedArrayBuffer 有効化）
-
-## v8.1.2 — 2026-06-25
-
 ### 新機能
 
 - **生演奏（ローカル生演奏）対応** — ローカル環境のユーザ自身がソース音源を直接聴きながら生演奏するケースに対応。共演者向けWS配信専用の「先行チャンネル」（配信本線とは別）へ配信より先行して録音済みトラックを流し込み、その先行量を「先行時間」で指定する。遅延をかけられないローカル演奏者の聴取に合わせて共演者向けWSチャンネルディレイを自動調整し、配信側に設定すべき同期オフセットを案内する。先行時間が不足する場合や、OBS配信遅延が想定アバター遅延を超える（配信を前倒しできず成立不能な）場合はエラーで案内する
@@ -25,10 +12,16 @@
 - 計測タブに配信トラック割当の警告・戻し忘れ注意を追加
 - RTSP E2E 計測: ffmpeg 受信に低遅延フラグを追加しバッファ遅延を削減
 
+### 修正
+
+- **配布ビルドがロードできない不具合を修正** — v8.1.2 の配布物が、OBS 同梱 FFmpeg の世代不一致（avcodec-61 ↔ 62）でロードできなかった問題を解消。Opus エンコードを FFmpeg から libopus + libobs リサンプラへ置換し、OBS 同梱 FFmpeg の世代に依存せずロードできるようにした
+- **低レイテンシ再生時の音切れ・音飛びを改善** — 受信側の再生を AudioWorklet + SharedArrayBuffer リングへ移し、ブラウザのメインスレッド一時停止（GC 等）に影響されず低レイテンシで安定再生できるようにした
+
 ### ビルド・配布
 
-- **CIビルド修正** — `windows-latest` ランナーの VS 2026 更新に対応し、CMake ジェネレーターを `Visual Studio 18 2026` に変更
-- **GitHub Actions を Node 24 ネイティブ版へ統一** — setup-node v6 / cache v6 / upload-artifact v7 / checkout v7 へ更新し、移行用フラグ `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24` を削除
+- **FFmpeg 依存を排除** — libopus(v1.5.2) を vendoring して静的リンク化（avcodec/avutil/swresample を除去）。サポート下限 OBS を `OBS_STUDIO_REF`（32.0.4）で固定し、FFmpeg 非依存を CI で検証
+- **CI を VS 2026 / Node 24 に対応** — CMake ジェネレーターを `Visual Studio 18 2026` へ変更し、旧 OBS preset（VS 2022 指定・`experimental/coroutine`）も VS 2026 でビルドできるよう調整。GitHub Actions を Node 24 ネイティブ（setup-node v6 / cache v6 / upload-artifact v7 / checkout v7）へ統一
+- **配送・受信の調整** — 受信ページ配信に TCP_NODELAY と COOP/COEP ヘッダ（SharedArrayBuffer 有効化）を追加
 - **依存関係更新** — vite 8.0.16 / i18next 26.3.1 / typescript 6.0.3 / postcss 8.5.15
 
 ## v8.0.0 — 2026-04-20
