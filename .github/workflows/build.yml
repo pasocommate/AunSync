@@ -14,6 +14,10 @@ jobs:
       # 実値はリポジトリ直下 OBS_STUDIO_REF ファイルから次ステップで上書きする。
       # ここでの宣言は env コンテキストの静的解析を満たすためのプレースホルダ。
       OBS_STUDIO_REF: ""
+      # OBS 32.0.x の libobs-winrt は <experimental/coroutine> を使うが、VS 2026 の
+      # MSVC はこれをハードエラー化したため、非推奨エラーを抑制してビルドを通す。
+      # CL 環境変数は cl.exe が読み取り、全コンパイルに /D を付与する。
+      CL: /D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS
     steps:
       - uses: actions/checkout@v7
 
