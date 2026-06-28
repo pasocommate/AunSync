@@ -7,27 +7,14 @@ namespace ods::widgets {
 	/**
 	 * ディレイタイミング図ウィジェットに渡す描画データ。
 	 *
-	 * DelayViewModel から必要なフィールドだけを抽出し、
-	 * QPainter によるタイミング図描画に必要な値をまとめる。
+	 * AunSync のソロモデル: アバターレーン [A] と配信レーン [D][R] を描画し、
+	 * 成立時（live_ok）は両レーンの右端が一致する。
 	 */
 	struct DelayDiagramInfo {
 		int  R;            ///< OBS 配信レイテンシ (ms)
 		int  A;            ///< アバターレイテンシ (ms)
-		int  buf;          ///< 再生バッファ (ms)
-		int  ch_count;     ///< チャンネル数
-		int  master_delay; ///< 自動調整ディレイ = neg_max（生演奏成立時は +live_extra）(ms)
-		bool live_perf;    ///< ローカル生演奏の絶対時間軸を表示するか
-		bool live_ok;      ///< 生演奏調整が成立しているか（配信レーンを先行時間分ずらす）
-		int  lead_ms;      ///< ローカル音源の先行時間 (ms)
-
-		struct ChInfo {
-			float measured_ms; ///< ブラウザ配信レイテンシ C[i] (ms)。未計測は -1.0f
-			int   total_ms;    ///< チャンネルディレイ (ms)
-			int   offset_ms;   ///< チャンネル補正オフセット (ms)
-			bool  provisional; ///< 仮値（他チャンネルの最小計測値）を使用中か
-		};
-		static constexpr int kMaxCh = 20;
-		ChInfo               channels[kMaxCh]{};
+		int  master_delay; ///< 自動調整ディレイ D (ms)
+		bool live_ok;      ///< D + R = A が成立しているか（R ≤ A）
 	};
 
 	/**
@@ -38,18 +25,13 @@ namespace ods::widgets {
 	struct DelayDiagramLabels {
 		const char *legend_delay         = nullptr; ///< "自動調整ディレイ"
 		const char *legend_delay_desc    = nullptr; ///< "は上記の値に基づいて…"
-		const char *legend_ws            = nullptr; ///< "ブラウザ配信レイテンシ"
-		const char *legend_env           = nullptr; ///< "環境遅延"
-		const char *legend_buf           = nullptr; ///< "再生バッファ"
 		const char *legend_avatar        = nullptr; ///< "アバターレイテンシ"
 		const char *legend_broadcast     = nullptr; ///< "OBS配信レイテンシ"
-		const char *legend_lead          = nullptr; ///< "先行時間"
 		const char *lane_broadcast       = nullptr; ///< "配信" (レーンラベル)
-		const char *lane_local           = nullptr; ///< "Local" (レーンラベル)
+		const char *lane_local           = nullptr; ///< "アバター" (レーンラベル)
 		const char *no_data              = nullptr; ///< "計測データなし"
 		const char *no_data_rtsp         = nullptr; ///< "OBS配信遅延が未計測です（…）"
-		const char *no_data_ws           = nullptr; ///< "WS配信遅延が未計測です（…）"
-		const char *legend_listen_timing = nullptr; ///< "出演者が聴くタイミング"
+		const char *legend_listen_timing = nullptr; ///< "観客が知覚するタイミング"
 		const char *help_text            = nullptr; ///< グループ末尾のヘルプテキスト
 	};
 

@@ -1,7 +1,6 @@
 # src の時間関連主要データ構造（UML）
 
-`src` 配下で「時間（delay / latency / RTT / playback buffer）」を扱う主要なデータ構造を、
-mermaid の `classDiagram` で整理したものです。
+`src` 配下で「時間（delay / latency）」を扱う主要なデータ構造を mermaid の `classDiagram` で整理したもの。
 
 ```mermaid
 classDiagram
@@ -20,157 +19,71 @@ classDiagram
         +process(input, output, frames)
     }
 
-    class LatencyResult {
+    class RtspE2eResult {
         +valid : bool
-        +avg_rtt_ms : double
-        +avg_latency_ms : double
-        +min_rtt_ms : double
-        +max_rtt_ms : double
-        +samples : int
-        +used_samples : int
-        +method : const char*
-    }
-
-    class RtmpProbeResult {
-        +valid : bool
-        +avg_rtt_ms : double
-        +avg_latency_ms : double
-        +min_rtt_ms : double
-        +max_rtt_ms : double
-        +jitter_ms : double
-        +samples : int
-        +failed : int
+        +latency_ms : double
+        +min_latency_ms : double
+        +max_latency_ms : double
         +error_msg : string
     }
 
-    class ChannelState {
-        +ping_times : map~int, Clock::time_point~
-        +rtt_samples : vector~double~
-        +measuring : bool (atomic)
-        +last_applied_delay : double
-        +last_applied_reason : string
+    class RtspE2eMeasureState {
+        +prober : RtspE2eProber
+        +apply_result(r)
+        +result() RtspE2eResult
+        +is_measuring() bool
+        +completed_sets() int
+        +total_sets() int
+        +last_error() string
     }
 
-    class ChSummary {
-        +ch : int
-        +connected : bool
-        +measured : bool
-        +one_way_latency_ms : double
+    class DelayState {
+        +measured_rtsp_e2e_ms : int
+        +rtsp_e2e_measured : bool
+        +avatar_latency_ms : int
+        +calc_all_delays() DelaySnapshot
     }
 
-    class FlowResult {
-        +completed_count : int
-        +ping_sent_count : int
-        +ping_total_count : int
-        +rtsp_e2e_latency_ms : double
-        +rtsp_e2e_valid : bool
-        +rtsp_e2e_error : string
-        +max_latency_ms() double
-        +ch_measured_ms(ch_index) int
-        +rtsp_e2e_ms() int
-    }
-
-    class MeasureState {
-        +measuring_ : bool
-        +applied_ : bool
-        +last_error_ : string
-    }
-
-    class RtmpMeasureState {
-        +prober : RtmpProber
-        +applied_ : bool
-        +cached_url_ : string
-    }
-
-    class SubChannel {
-        +measured_ms : int
-        +offset_ms : int
+    class DelaySnapshot {
+        +master_delay_ms : int
+        +service_too_slow : bool
+        +rtsp_e2e_measured : bool
+        +audio_sync_offset_ms : int
     }
 
     class DelayStreamData {
-        +playback_buffer_ms : int
-        +avatar_latency_ms : int
-        +measured_rtsp_e2e_ms : int
+        +delay : DelayState
+        +master_buf : DelayBuffer
+        +rtsp_e2e_measure : RtspE2eMeasureState
+        +sample_rate : uint32_t
+        +channels : uint32_t
     }
 
-    class AudioConfig {
-        +playback_buffer_ms : int
-    }
-
-    class SyncFlow {
-        +phase_ : FlowPhase
-        +ping_count_ : int
-        +prober_ : RtmpProber
-    }
-
-    class StreamRouter {
-        +playback_buffer_ms_ : int (atomic)
-        +set_audio_config(cfg)
-        +start_measurement(ch, num_pings, interval_ms, start_delay_ms)
-    }
-
+    DelayStreamData *-- DelayState : delay
     DelayStreamData *-- DelayBuffer : master_buf
-    DelayStreamData *-- "MAX_SUB_CH" SubChannel : sub_channels
-    DelayStreamData *-- RtmpMeasureState : rtmp_measure
-    DelayStreamData *-- SyncFlow : flow
-    DelayStreamData *-- StreamRouter : router
+    DelayStreamData *-- RtspE2eMeasureState : rtsp_e2e_measure
 
-    SubChannel *-- DelayBuffer : buf
-    SubChannel *-- MeasureState : measure
-    MeasureState --> LatencyResult : result_
-
-    RtmpMeasureState --> RtmpProbeResult : result_
-
-    FlowResult *-- "MAX_SUB_CH" ChSummary : channels
-    SyncFlow --> FlowResult : result_
-
-    StreamRouter o-- "sid/chごと" ChannelState : ch_map_
-    ChannelState --> LatencyResult : last_result
-    StreamRouter ..> AudioConfig
+    RtspE2eMeasureState --> RtspE2eResult : result_
+    DelayState --> DelaySnapshot : calc_all_delays()
 ```
 
 ## 補足
 
-- `DelayStreamData` がランタイム中の設定値（`avatar_latency_ms`, `measured_rtsp_e2e_ms`, `playback_buffer_ms`）と、各機能（`SyncFlow`, `StreamRouter`, `RtmpMeasureState`）を集約します。
-- 実際の音声遅延適用は `DelayBuffer`（`master_buf` と各 `SubChannel::buf`）で行われます。
-- 計測値は WebSocket 側が `LatencyResult`（チャンネル別）、RTSP E2E 側が `RtspE2eResult`、全体集約が `FlowResult` です。
+- `DelayStreamData` がランタイム中の設定値（`avatar_latency_ms`, `measured_rtsp_e2e_ms`）と各機能（`RtspE2eMeasureState`）を集約する。
+- 実際の音声遅延適用は `DelayBuffer`（`master_buf`）で行われる。
+- 計測値は `RtspE2eMeasureState` → `RtspE2eResult` に保持される。
 
-## 遅延計算式
+## ディレイ計算式
 
-`recalc_all_delays()` で全チャンネル一括実行します。
-
-```
-R = measured_rtsp_e2e_ms      (RTSP E2E 計測結果)
-A = avatar_latency_ms         (アバターレイテンシ)
-B = playback_buffer_ms        (再生バッファ量)
-C[i] = sub_channels[i].measured_ms  (チャンネル i の WS 計測結果)
-offset[i] = sub_channels[i].offset_ms  (チャンネル i の手動補正)
-
-raw[i]   = R - A - C[i] - B - offset[i]
-neg_max  = max(0, max(-raw[i] for all measured i where raw[i] < 0))
-
-ch_delay[i] = raw[i] + neg_max   (各チャンネルの DelayBuffer 適用値)
-obs_delay   = neg_max             (OBS オーディオ出力の DelayBuffer 適用値)
-```
-
-### ローカル生演奏 (`live_perf_enabled`) が成立する場合の補正
-
-> 目的・設計判断・運用上の注意は [live-performance.md](live-performance.md) を参照。
-
-配信者がソース音源をリアルタイムにモニターしながら演奏するケース。プラグイン挿入
-チャンネルへは配信チャンネルより `lead_time_ms` だけ先行して音を入力する前提で、調整
-できないローカル聴取タイミングに全体を揃える。
+`calc_all_delays()` で実行する。
 
 ```
-min_lead     = neg_max + R - A             (成立に必要な最小先行時間)
-live_extra   = lead_time_ms - min_lead     (成立時は >= 0)
+R = measured_rtsp_e2e_ms   (RTSP E2E 計測結果)
+A = avatar_latency_ms      (想定アバター遅延)
 
-ch_delay[i] += live_extra                  (計測済み/仮値チャンネルのみ)
-master_delay = neg_max + live_extra        (タイミング図・案内用に保持する値)
-obs_delay    = 0                           (本線 master_buf へは適用しない)
+service_too_slow = rtsp_e2e_measured && (R > A)
+master_delay_ms  = service_too_slow ? 0 : max(0, A - R)
 ```
 
-- プラグイン挿入チャンネルは配信に乗らない前提のため、本線(`master_buf`)へは自動調整
-  ディレイを適用せず、配信チャンネル側へ設定すべき同期オフセット値をUIで案内する。
-- 成立条件: `R <= A`（超過は解決不能 = Error）かつ `lead_time_ms >= min_lead`
-  （不足は最小値を案内 = Warning）。いずれか不成立なら `live_extra` は適用しない。
+`service_too_slow` が真のときはディレイ調整不能（配信遅延 R が想定アバター遅延 A を超えている）。
+この場合は UI でエラーを表示し、より低遅延な配信サービスへの切り替えを促す。

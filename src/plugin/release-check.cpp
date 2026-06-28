@@ -20,9 +20,9 @@ namespace ods::plugin {
 	namespace {
 
 		static constexpr const char *kLatestReleaseUrl =
-			"https://github.com/MZ1987Records/obs-delay-stream/releases/latest";
+			"https://github.com/pasocommate/AunSync/releases/latest";
 		static constexpr const char *kTagReleaseBaseUrl =
-			"https://github.com/MZ1987Records/obs-delay-stream/releases/tag/v";
+			"https://github.com/pasocommate/AunSync/releases/tag/v";
 		// 無限ループ的なリダイレクト追従を避けるための上限。
 		static constexpr int kMaxRedirects = 8;
 
@@ -252,7 +252,7 @@ namespace ods::plugin {
 	bool fetch_latest_release_info(LatestReleaseInfo &out) {
 		out = LatestReleaseInfo{};
 		ScopedInternetHandle session(InternetOpenA(
-			"obs-delay-stream-update-check",
+			"aunsync-update-check",
 			INTERNET_OPEN_TYPE_PRECONFIG,
 			nullptr,
 			nullptr,
@@ -270,7 +270,7 @@ namespace ods::plugin {
 									   INTERNET_FLAG_NO_UI |
 									   INTERNET_FLAG_NO_AUTO_REDIRECT;
 			static const char *kHeaders =
-				"User-Agent: obs-delay-stream\r\n"
+				"User-Agent: AunSync\r\n"
 				"Accept: text/html\r\n";
 			ScopedInternetHandle req(InternetOpenUrlA(
 				session.get(),

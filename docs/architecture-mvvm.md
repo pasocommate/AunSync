@@ -18,7 +18,7 @@
                 │ reads (const 参照)
 ┌───────────────┴──────────────────────────────┐
 │  ViewModel (読み取り専用スナップショット)        │
-│  例: DelayViewModel                           │
+│  DelayViewModel                              │
 │  build() で Model + obs_data から毎回構築      │
 │  計算済み表示データを保持                       │
 └───────────────┬──────────────────────────────┘
@@ -36,7 +36,7 @@
 |---|---|---|
 | `src/model/` | Model | `DelayState`, `SettingsRepo` |
 | `src/viewmodel/` | ViewModel | `DelayViewModel` |
-| `src/ui/` | View | `properties-*.cpp` (OBS プロパティ構築) |
+| `src/ui/` | View | `properties-builder.cpp`, `properties-delay.cpp` |
 | `src/plugin/` | Infrastructure | `DelayStreamData`, `SettingsApplier`, イベント CB |
 
 ---
@@ -47,32 +47,25 @@
 
 **ディレイ計算の唯一の真実 (single source of truth)**。
 
-- `DelayState` — 計算に必要な入力値（計測結果、オフセット、アバター遅延など）
+- `DelayState` — 計算に必要な入力値（計測結果、アバター遅延）
 - `DelaySnapshot` — `calc_all_delays()` が返す不変の計算結果
 
 ```cpp
 // 入力値
 struct DelayState {
-    int  measured_rtsp_e2e_ms;
-    int  avatar_latency_ms;
-    int  playback_buffer_ms;
-    bool live_perf_enabled;  // ローカル生演奏調整の有効フラグ
-    int  lead_time_ms;       // 先行時間（配信チャンネルに対する先行量）
-    std::array<ChDelay, MAX_SUB_CH> channels; // measured_ms, ws_measured, offset_ms
+    int  measured_rtsp_e2e_ms = 0;     // R: OBS 配信遅延 (ms)
+    bool rtsp_e2e_measured    = false; // RTSP E2E 計測済みフラグ
+    int  avatar_latency_ms    = 200;   // A: 想定アバター遅延 (ms)
+
     DelaySnapshot calc_all_delays() const;
 };
 
-// 計算結果（不変）
+// 計算結果（不変）: D = max(0, A − R)
 struct DelaySnapshot {
-    std::array<ChDelay, MAX_SUB_CH> channels; // raw_ms, total_ms, has_measurement, warn
-    int  neg_max_ms;
-    int  master_delay_ms;
-    int  active_count;
-    // ローカル生演奏: 成否と内訳
-    //   live_perf_ok / live_extra_ms / live_min_lead_ms /
-    //   live_service_too_slow / live_lead_too_short
-    bool live_perf_ok;
-    int  live_extra_ms;
+    int  master_delay_ms;       // 出口で付加するディレイ D (ms)
+    bool service_too_slow;      // R > A でディレイ調整不能か
+    bool rtsp_e2e_measured;     // R が計測済みか
+    int  audio_sync_offset_ms;  // 親ソースに求める同期オフセット（固定 −950）
 };
 ```
 
@@ -88,49 +81,38 @@ struct DelaySnapshot {
 class SettingsRepo {
     obs_data_t *s_;
 public:
-    // チャンネル別
-    int  ch_measured_ms(int ch) const;
-    void set_ch_measured_ms(int ch, int v);
-    // ... ch_ws_measured, ch_offset_ms, ch_memo, ch_code
-
-    // 一括操作
-    void shift_channels_down(int from_ch);
-    void swap_channels(int ch_a, int ch_b);
-    void clear_channel(int ch);
-
-    // グローバル
-    int  sub_ch_count() const;
-    void set_sub_ch_count(int v);
-    int  memo_auto_counter() const;
-    void set_memo_auto_counter(int v);
+    int  avatar_latency_ms() const;
+    void set_avatar_latency_ms(int v);
+    int  measured_rtsp_e2e_ms() const;
     void set_measured_rtsp_e2e_ms(int v);
+    bool rtsp_e2e_measured() const;
     void set_rtsp_e2e_measured(bool v);
+    bool rtsp_use_rtmp_url() const;
+    void set_rtsp_use_rtmp_url(bool v);
+    std::string rtsp_url() const;
+    void set_rtsp_url(const std::string &v);
 };
 ```
 
 **ルール**:
 - UI コールバック (`properties-*.cpp`) から `obs_data_get_*/set_*` を直接呼ばない。必ず `SettingsRepo` 経由。
 - 新しい obs_data キーを追加する場合、SettingsRepo にアクセサを追加してから使う。
-- キー名文字列は `plugin-settings.hpp` の `make_sub_*_key()` または SettingsRepo 内に定義する。外部に散在させない。
+- キー名文字列は `plugin-settings.hpp` の定数として定義する。外部に散在させない。
 
 ### 2.3 DelayViewModel (`src/viewmodel/delay-viewmodel.hpp`)
 
-**微調整タブ UI 用の読み取り専用スナップショット**。
+**微調整 UI 用の読み取り専用スナップショット**。
 
 ```cpp
 struct DelayViewModel {
-    struct ChDisplay { name, measured_ms, offset_ms, total_ms, provisional, slot };
-    DelaySnapshot          snapshot;
-    std::vector<ChDisplay> channels;
-    int                    selected_ch;
-    int                    rtsp_e2e_ms, avatar_latency_ms, playback_buffer_ms;
-    // ローカル生演奏（snapshot から転写）
-    bool                   live_perf_enabled, live_perf_ok;
-    int                    live_extra_ms, live_min_lead_ms, lead_time_ms;
-    bool                   live_service_too_slow, live_lead_too_short;
+    DelaySnapshot snapshot;
+    int  rtsp_e2e_ms;
+    bool rtsp_e2e_measured;
+    int  avatar_latency_ms;
+    int  master_delay_ms;
+    bool service_too_slow;
 
-    static DelayViewModel build(const DelayState &delay, obs_data_t *settings,
-                                const ChannelLayout &layout);
+    static DelayViewModel build(const DelayState &delay);
 };
 ```
 
@@ -151,35 +133,28 @@ obs_data_t 変更 (OBS update コールバック)
     → d->delay.xxx へ値を転写
     → recalc_all_delays(d)
       → d->delay.calc_all_delays()  → DelaySnapshot
-      → 各 DelayBuffer へ total_ms を適用
-        （生演奏成立時は master_buf へは適用せず 0。配信側へ手動同期オフセットを案内）
+      → master_buf へ master_delay_ms を適用
 ```
 
 ### 3.2 計測完了 → 設定書き戻し → ディレイ反映
 
 ```
-計測コールバック (flow.on_ws_measured 等)
+計測コールバック (rtsp_e2e_measure.on_result)
   → queue_ui_safe() で UI スレッドへディスパッチ
-    → d->delay.channels[ch].measured_ms = 計測値
-    → save_measurement_and_recalc(d)
-      → SettingsRepo で obs_data に書き戻し
-      → recalc_all_delays(d)
-    → request_props_refresh_for_tabs()
+    → SettingsRepo で obs_data に書き戻し
+    → recalc_all_delays(d)
+    → request_props_refresh()
 ```
 
 ### 3.3 UI 再描画
 
 ```
 get_properties(d)
-  → アクティブタブに応じて分岐
-  → case 6 (微調整タブ):
-      obs_data_t *s = obs_source_get_settings(d->context);
-      DelayViewModel vm = DelayViewModel::build(d->delay, s, d->layout);
-      obs_data_release(s);
-      // いずれも vm を const 参照で受け取り読み取り専用で構築
-      add_fine_tune_group(props, d, vm);
-      add_live_perf_group(props, d, vm);
-      add_delay_diagram_group(props, d, vm);
+  → add_plugin_group(props, d)
+  → add_master_group(props, d)        // RTSP E2E 計測グループ
+  → DelayViewModel vm = DelayViewModel::build(d->delay)
+  → delay::add_fine_tune_group(props, d, vm)
+  → delay::add_delay_diagram_group(props, d, vm)
 ```
 
 ---
@@ -191,17 +166,16 @@ get_properties(d)
 ### 4.1 ディレイ計算に影響するパラメータの場合
 
 1. **DelayState にフィールド追加** (`src/model/delay-state.hpp`)
-   - チャンネル別なら `DelayState::ChDelay` に、グローバルなら `DelayState` 直下に追加
    - `calc_all_delays()` の計算式を更新
 
 2. **SettingsRepo にアクセサ追加** (`src/model/settings-repo.hpp`)
-   - キーが新規なら `plugin-settings.hpp` にキー定数/生成関数を追加
+   - キーが新規なら `plugin-settings.hpp` にキー定数を追加
 
 3. **SettingsApplier で転写** (`src/plugin/plugin-settings.cpp`)
    - `apply_delay_settings()` で obs_data → `d->delay.xxx` への転写を追加
 
 4. **DelayViewModel に表示フィールド追加** (必要な場合のみ, `src/viewmodel/delay-viewmodel.hpp`)
-   - `ChDisplay` や ViewModel 直下にフィールドを追加
+   - ViewModel 直下にフィールドを追加
    - `build()` で値を設定
 
 5. **UI 構築関数を更新** (`src/ui/properties-delay.cpp`)
@@ -215,41 +189,22 @@ get_properties(d)
 
 2. **SettingsApplier で転写** (`src/plugin/plugin-settings.cpp`)
 
-3. **UI 構築関数を更新** (`src/ui/properties-*.cpp`)
-   - 該当タブの ViewModel がある場合はそこにフィールドを追加
-   - ない場合は `DelayStreamData` から直接読み取って良い（将来 ViewModel を導入する余地を残す）
-
-### 4.3 チャンネル別パラメータの場合
-
-上記に加えて:
-
-1. **SettingsRepo の一括操作を更新**
-   - `copy_channel()` / `clear_channel()` / `swap_channels()` に新フィールドを追加
-   - これを忘れるとチャンネル削除・並替えで値が失われる
-
-2. **キー生成関数を追加** (`plugin-settings.hpp`)
-   - `make_sub_*_key(int ch)` を追加
+3. **UI 構築関数を更新** (`src/ui/properties-builder.cpp` または `properties-delay.cpp`)
 
 ---
 
 ## 5. UI 改修チェックリスト
 
-### 5.1 微調整タブ (tab 6) の改修
+### 5.1 微調整グループの改修
 
 1. 表示データは **必ず `DelayViewModel` 経由**で取得する
 2. `DelayStreamData` を直接参照しない
-3. 新しい表示項目は `DelayViewModel::ChDisplay` またはルート構造体にフィールドを追加し、`build()` で計算する
+3. 新しい表示項目は ViewModel にフィールドを追加し、`build()` で計算する
 
-### 5.2 チャンネル管理タブの改修
+### 5.2 その他グループの改修
 
-1. `obs_data` 操作は **`SettingsRepo` 経由**
-2. チャンネル追加/削除/並替えのロジックは `properties-channels.cpp` のコールバック内で完結させる
-3. 新しいチャンネル別フィールドを追加したら、`SettingsRepo::copy_channel()` / `clear_channel()` / `swap_channels()` を更新する
-
-### 5.3 その他のタブの改修
-
-- 現時点では ViewModel 未導入のタブ（ネットワーク、トンネル等）は `DelayStreamData` を直接参照して良い
-- 将来そのタブの複雑度が上がった場合、同様のパターンで ViewModel を導入する
+- `add_plugin_group` / `add_master_group` は `DelayStreamData` を直接参照して良い
+- 将来そのグループの複雑度が上がった場合、同様のパターンで ViewModel を導入する
 
 ---
 
@@ -267,9 +222,9 @@ get_properties(d)
 
 ### 6.1 modified callback と `return true` のルール
 
-OBS の modified callback が `true` を返すと、OBS は `RefreshProperties()` を実行してダイアログ全体の Qt ウィジェットツリーを再構築する。この再構築は `OBS_TEXT_INFO` プレースホルダーを経由して注入されたカスタムウィジェット（ColorButtonRow, PulldownRow, StepperRow 等）を破壊する。
+OBS の modified callback が `true` を返すと、OBS は `RefreshProperties()` を実行してダイアログ全体の Qt ウィジェットツリーを再構築する。この再構築は `OBS_TEXT_INFO` プレースホルダーを経由して注入されたカスタムウィジェット（HelpCallout, DelayDiagram 等）を破壊する。
 
-**ルール**: カスタムウィジェットが存在するタブで `return true` する場合、直後にそのタブに必要な inject を再スケジュールすること。
+**ルール**: カスタムウィジェットが存在するグループで `return true` する場合、直後にそのグループに必要な inject を再スケジュールすること。
 
 ```cpp
 // ✓ 正しいパターン
@@ -278,9 +233,8 @@ bool cb_xxx_changed(void *priv, obs_properties_t *props, obs_property_t *, obs_d
     // ... visibility/enabled 変更 ...
     props_ui_with_preserved_scroll([d]() {
         if (!d || !d->context) return;
-        schedule_color_button_row_inject(d->context);
-        schedule_pulldown_row_inject(d->context);   // タブに応じて必要な inject を列挙
-        schedule_stepper_inject(d->context);
+        schedule_help_callout_inject(d->context);
+        schedule_delay_diagram_inject(d->context);
     });
     return true;
 }
@@ -305,8 +259,7 @@ OBS はプロパティダイアログ構築時にも modified callback を呼ぶ
 | `DelayBuffer::delay_samples_` | UI (`set_delay_ms`) | Audio (`process`) | atomic (既存) |
 | `DelayState` フィールド | UI (`SettingsApplier` / CB) | UI (`ViewModel::build`) | 単一スレッド |
 | ViewModel | UI で構築 | UI で消費 | スタックローカル |
-| `MeasureState` 内部 | Worker | UI | per-instance mutex |
-| `stream_id`, `host_ip` | UI | Audio | `stream_id_mtx` |
+| `RtspE2eMeasureState` 内部 | Worker | UI | per-instance mutex |
 
 新しいフィールドを追加する際は、このスレッドモデルに合わせて適切な保護を選択する。
 
@@ -314,10 +267,10 @@ OBS はプロパティダイアログ構築時にも modified callback を呼ぶ
 
 ## 8. 将来の拡張方針
 
-現在 ViewModel が導入されているのは微調整タブ (tab 6) のみ。
-他のタブ（ネットワーク、トンネル等）の複雑度が上がった場合は、同じパターンで ViewModel を導入する:
+現在 ViewModel が導入されているのは微調整グループのみ。
+他のグループ（RTSP 計測等）の複雑度が上がった場合は、同じパターンで ViewModel を導入する:
 
 1. `src/viewmodel/` に `XxxViewModel` を作成
 2. `build()` で必要なデータを事前計算
 3. UI 構築関数の引数を `const XxxViewModel &` に変更
-4. `get_properties()` 内でアクティブタブのときだけ構築
+4. `get_properties()` 内でそのグループ構築時だけ構築

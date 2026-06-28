@@ -97,18 +97,18 @@ namespace ods::network {
 		std::string get_default_ffmpeg_base_dir() {
 			std::string base = get_local_appdata_dir();
 			if (!base.empty()) {
-				const std::string dir = base + "\\obs-delay-stream\\bin\\ffmpeg";
-				ensure_dir(base + "\\obs-delay-stream");
-				ensure_dir(base + "\\obs-delay-stream\\bin");
+				const std::string dir = base + "\\AunSync\\bin\\ffmpeg";
+				ensure_dir(base + "\\AunSync");
+				ensure_dir(base + "\\AunSync\\bin");
 				ensure_dir(dir);
 				return dir;
 			}
 			std::string tmp = get_temp_dir();
 			if (tmp.empty()) tmp = "C:\\Temp\\";
 			if (!tmp.empty() && tmp.back() == '\\') tmp.pop_back();
-			const std::string dir = tmp + "\\obs-delay-stream\\bin\\ffmpeg";
-			ensure_dir(tmp + "\\obs-delay-stream");
-			ensure_dir(tmp + "\\obs-delay-stream\\bin");
+			const std::string dir = tmp + "\\AunSync\\bin\\ffmpeg";
+			ensure_dir(tmp + "\\AunSync");
+			ensure_dir(tmp + "\\AunSync\\bin");
 			ensure_dir(dir);
 			return dir;
 		}
@@ -279,7 +279,7 @@ namespace ods::network {
 
 			const std::string base_dir = get_default_ffmpeg_base_dir();
 			const std::string zip_path = base_dir + "\\" + kFfmpegZipName;
-			blog(LOG_INFO, "[obs-delay-stream] ffmpeg auto-download: %s", zip_path.c_str());
+			blog(LOG_INFO, "[aunsync] ffmpeg auto-download: %s", zip_path.c_str());
 			const HRESULT hr = URLDownloadToFileA(nullptr, kFfmpegBtbnZipUrl, zip_path.c_str(), 0, nullptr);
 			if (FAILED(hr)) {
 				char hr_hex[32] = {};

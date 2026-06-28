@@ -4,14 +4,11 @@
 
 `build.bat` は以下を一括実行します。
 
-- OBS Studio ソースの自動取得/ビルド（未準備時）
-- `websocketpp` / `asio` の取得
-- receiver リソースの npm ビルド
+- OBS Studio のクローン・ビルド（初回のみ自動）
 - プラグインの CMake 構成/ビルド
 - OBS へのインストール（ProgramData 既定）
 
 ```powershell
-cd C:\obs-delay-stream
 .\build.bat
 ```
 
@@ -19,12 +16,6 @@ cd C:\obs-delay-stream
 
 ```powershell
 .\build.bat D:\dev\obs-studio
-```
-
-receiver ファイルだけ更新する場合:
-
-```powershell
-.\build.bat --receiver-only
 ```
 
 ## build.bat の設定
@@ -52,46 +43,36 @@ OBS_CI=1
 - Visual Studio 2022（Desktop development with C++、MSVC v143、Windows SDK）
 - CMake 3.16+
 - Git for Windows
-- Node.js 20+（npm 必須）
 
 ## 手動ビルド（必要時のみ）
 
 ### 1. OBS Studio をビルド
 
+対象バージョンは `OBS_STUDIO_REF` ファイルで管理されています（現在: `32.0.4`）。
+
 ```powershell
-git clone --recursive https://github.com/obsproject/obs-studio.git C:\obs-delay-stream\third_party\obs-studio
-cd C:\obs-delay-stream\third_party\obs-studio
-cmake --list-presets
+git clone --depth 1 --branch 32.0.4 --recurse-submodules `
+  https://github.com/obsproject/obs-studio.git third_party\obs-studio
+cd third_party\obs-studio
 cmake --preset windows-x64
-cmake --build --preset windows-x64 --config RelWithDebInfo --parallel
+cmake --build build_x64 --config RelWithDebInfo --parallel
+cd ..\..
 ```
 
-### 2. 依存ライブラリを取得
+### 2. プラグインを構成/ビルド
 
 ```powershell
-cd C:\obs-delay-stream
-mkdir third_party
-cd third_party
-git clone https://github.com/zaphoyd/websocketpp.git
-git clone --branch asio-1-18-2 --depth 1 https://github.com/chriskohlhoff/asio.git
-```
-
-### 3. プラグインを構成/ビルド
-
-```powershell
-cd C:\obs-delay-stream
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
-  -DOBS_SOURCE_DIR=C:\obs-delay-stream\third_party\obs-studio `
+  -DOBS_SOURCE_DIR=third_party\obs-studio `
   -DOBS_PLUGIN_LEGACY_INSTALL=OFF
 cmake --build build --config RelWithDebInfo --parallel
 ```
 
 生成物:
 
-- `build\RelWithDebInfo\obs-delay-stream.dll`
-- `build\receiver_dist\`（receiver 配布一式）
+- `build\RelWithDebInfo\aunsync.dll`
 
-### 4. OBS へインストール
+### 3. OBS へインストール
 
 推奨（CMake install）:
 
@@ -105,24 +86,20 @@ legacy 配置:
 cmake --install build --config RelWithDebInfo --prefix "C:\Program Files\obs-studio"
 ```
 
-手動コピー時は、DLL だけでなく `build\receiver_dist` 一式も必要です。
-
 ProgramData 配置の例:
 
 ```text
-build\RelWithDebInfo\obs-delay-stream.dll
-  -> C:\ProgramData\obs-studio\plugins\obs-delay-stream\bin\64bit\
+build\RelWithDebInfo\aunsync.dll
+  -> C:\ProgramData\obs-studio\plugins\aunsync\bin\64bit\
 data\locale\*.ini
-  -> C:\ProgramData\obs-studio\plugins\obs-delay-stream\data\locale\
-build\receiver_dist\**
-  -> C:\ProgramData\obs-studio\plugins\obs-delay-stream\data\receiver\
+  -> C:\ProgramData\obs-studio\plugins\aunsync\data\locale\
 ```
 
-### 5. 動作確認
+### 4. 動作確認
 
 1. OBS Studio を起動
 2. 音声ソースを右クリック
-3. フィルター -> `+` -> `obs-delay-stream`
+3. フィルター -> `+` -> `AunSync`
 4. GUI が開けば完了
 
 ## よくあるエラー
@@ -132,58 +109,51 @@ build\receiver_dist\**
 - `OBS_SOURCE_DIR` が OBS ソースのルートを指しているか確認
 - `OBS_SOURCE_DIR\build_x64\libobs\RelWithDebInfo\obs.lib` の存在を確認
 
-### `Cannot open include file: 'websocketpp/...'`
-
-- `third_party\websocketpp\websocketpp\server.hpp` の存在を確認
-
-### receiver ページの見た目が崩れる / 404
-
-- `build\receiver_dist\index.html` が生成されているか確認
-- `build\receiver_dist` 一式がインストール先にコピーされているか確認
-
 ## 現在の主要ファイル構成
 
 ```text
-obs-delay-stream/
+AunSync/
   .github/workflows/build.yml      リリースビルド（タグ push）
-  cmake/
-    embed_html.cmake               receiver HTML 埋め込みヘルパー
   data/locale/
     en-US.ini
     ja-JP.ini
-  receiver/
-    index.html                     受信ページテンプレート（@PROJECT_VERSION@ を展開）
-    js/
-      receiver.ts                  受信ページロジック
-      dom.ts                       DOM ユーティリティ
-      i18n.ts                      国際化
-    css/ui.css
-    *.svg
-    package.json                   npm ビルド定義
-    vite.config.mjs                receiver 配布用 Vite 設定
-    node_modules/                  npm 依存（i18next / bulma / fontawesome）
-    third_party/
-      opus-decoder/
   src/
-    plugin-main.cpp                プラグイン本体
-    constants.hpp                  共有定数
-    delay-filter.hpp               遅延バッファ処理
-    websocket-server.hpp           WebSocket/HTTP サーバー
-    rtmp-prober.hpp                RTMP 遅延計測
-    sync-flow.hpp                  同期フロー制御
-    tunnel-manager.hpp             cloudflared 管理
+    audio/
+      audio-processor.cpp/hpp      音声フィルタ処理・プローブ注入
+      probe-signal.cpp/hpp         RTSP E2E 計測用チャープ信号
+    core/
+      constants.hpp                共有定数
+      delay-buffer.hpp             遅延バッファ
+      string-format.hpp            文字列ユーティリティ
+    model/
+      delay-state.hpp              DelayState / DelaySnapshot
+      settings-repo.hpp            SettingsRepo
+    network/
+      rtsp-e2e-prober.cpp/hpp      RTSP E2E 遅延計測
+    plugin/
+      plugin-main.cpp              プラグインエントリポイント
+      plugin-config.cpp/hpp        設定スキーマ・デフォルト値
+      plugin-helpers.cpp/hpp       共通ヘルパー
+      plugin-services.cpp/hpp      バックグラウンドサービス
+      plugin-settings.cpp/hpp      SettingsApplier・キー定数
+      plugin-state.hpp             DelayStreamData
+      plugin-utils.cpp/hpp         ユーティリティ
+      release-check.cpp/hpp        更新確認
+    ui/
+      properties-builder.cpp/hpp   プラグイン情報・RTSP計測 UI
+      properties-delay.cpp/hpp     微調整・タイミング図 UI
+      props-refresh.cpp/hpp        プロパティ再描画制御
+    viewmodel/
+      delay-viewmodel.hpp          DelayViewModel
+    widgets/
+      delay-diagram-widget.cpp/hpp タイミング図ウィジェット
+      help-callout-widget.cpp/hpp  ヘルプコールアウトウィジェット
+      widget-inject-utils.hpp      ウィジェット注入ユーティリティ
+      widget-payload-utils.cpp/hpp ウィジェットペイロード処理
   third_party/                     （ローカル取得。通常は Git 管理外）
     obs-studio/
-    websocketpp/
-    asio/
   build.bat
   build.env.sample
   CMakeLists.txt
-  README.md
   BUILDING.md
 ```
-
-補足:
-
-- `build/generated/receiver_index_html.hpp` はビルド時の生成ファイルです。
-- `build/receiver_dist` は receiver の npm ビルド出力です。

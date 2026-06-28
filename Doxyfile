@@ -1,6 +1,6 @@
 DOXYFILE_ENCODING      = UTF-8
-PROJECT_NAME           = "obs-delay-stream"
-PROJECT_BRIEF          = "OBS delay stream plugin API documentation"
+PROJECT_NAME           = "AunSync"
+PROJECT_BRIEF          = "AunSync OBS plugin API documentation"
 OUTPUT_DIRECTORY       = build/docs
 CREATE_SUBDIRS         = NO
 ALLOW_UNICODE_NAMES    = YES

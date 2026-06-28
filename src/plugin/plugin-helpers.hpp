@@ -34,10 +34,4 @@ namespace ods::plugin {
 	/// RTMP URL のスキームを RTSP 系へ変換する
 	std::string to_rtsp_url_from_rtmp(const std::string &rtmp_url);
 
-	/// cloudflared パスが未設定なら自動検索結果を補完する
-	void maybe_fill_cloudflared_path_from_auto(obs_source_t *source);
-
-	/// 自動取得完了後に必要なら cloudflared パス設定を補完する
-	void maybe_persist_cloudflared_path_after_auto_ready(obs_source_t *source);
-
 } // namespace ods::plugin

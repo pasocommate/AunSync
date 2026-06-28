@@ -2,151 +2,37 @@
 
 #include "core/constants.hpp"
 
-#include <array>
-#include <climits>
-
 namespace ods::model {
 
-	using ods::core::MAX_SUB_CH;
-
 	/**
-	 * 全チャンネルのディレイ計算結果スナップショット。
+	 * AunSync のディレイ計算結果スナップショット。
 	 *
-	 * UI 表示と DelayBuffer 適用の両方で使い、計算ロジックの重複を排除する。
+	 * ソロ配信者が配信チャンネルに直接フィルタを挿す前提で、
+	 * 観客が聴く配信音 (D + R) とアバター動作 (A) を揃える。
 	 */
 	struct DelaySnapshot {
-		struct ChDelay {
-			int  raw_ms          = 0;     ///< R - A - C[i] - B - offset[i]（負値許容）
-			int  total_ms        = 0;     ///< raw_ms + neg_max（バッファ適用値）
-			bool has_measurement = false; ///< WS 計測済みか
-			bool provisional     = false; ///< 仮値（他チャンネルの最小計測値）を使用中か
-			bool warn            = false; ///< floor 補正の原因チャンネルか
-		};
-		std::array<ChDelay, MAX_SUB_CH> channels{};
-		int                             neg_max_ms            = 0;     ///< 負値 raw の最大絶対値
-		int                             master_delay_ms       = 0;     ///< 自動調整ディレイ = neg_max（生演奏成立時は +live_extra、本線へは未適用）
-		int                             active_count          = 0;     ///< 計算対象チャンネル数
-		bool                            live_perf_enabled     = false; ///< ローカル生演奏調整が有効か
-		bool                            live_perf_ok          = false; ///< 生演奏調整が成立しているか
-		int                             live_extra_ms         = 0;     ///< 成立時に追加したディレイ
-		int                             live_min_lead_ms      = 0;     ///< 成立に必要な最小先行時間
-		bool                            live_service_too_slow = false; ///< OBS配信遅延がアバター遅延を超えているか
-		bool                            live_lead_too_short   = false; ///< 先行時間が不足しているか
-		int                             live_lead_ms          = 0;     ///< 設定された先行時間
+		int  master_delay_ms      = 0;                                   ///< 出口で付加するディレイ D (ms)
+		bool service_too_slow     = false;                               ///< OBS 配信遅延 R が想定アバター遅延 A を超えているか
+		bool rtsp_e2e_measured    = false;                               ///< R が計測済みか
+		int  audio_sync_offset_ms = core::REQUIRED_AUDIO_SYNC_OFFSET_MS; ///< 親ソースに求める同期オフセット
 	};
 
 	/**
-	 * ディレイ計算に必要な入力値をまとめた状態構造体。
-	 *
-	 * DelayStreamData からディレイ計算の関心事だけを分離し、
-	 * calc_all_delays() で一元的にスナップショットを生成する。
+	 * AunSync のディレイ計算入力。
 	 */
 	struct DelayState {
-		/// チャンネルごとのディレイ計算入力値。
-		struct ChDelay {
-			int  measured_ms = 0;     ///< WS 計測結果の片道レイテンシ (ms)
-			bool ws_measured = false; ///< WS 計測済みフラグ
-			int  offset_ms   = 0;     ///< 手動補正オフセット (ms)
-		};
+		int  measured_rtsp_e2e_ms = 0;     ///< R: OBS 配信遅延 (ms)
+		bool rtsp_e2e_measured    = false; ///< RTSP E2E 計測済みフラグ
+		int  avatar_latency_ms    = 200;   ///< A: 想定アバター遅延 (ms)
 
-		int                             measured_rtsp_e2e_ms = 0;     ///< RTSP E2E 計測結果 (ms, OBS 設定に永続保存)
-		bool                            rtsp_e2e_measured    = false; ///< RTSP E2E 計測済みフラグ
-		int                             avatar_latency_ms    = 0;     ///< アバター同期レイテンシ (ms, 0-5000)
-		int                             playback_buffer_ms   = 0;     ///< 再生バッファ量 (ms)
-		bool                            live_perf_enabled    = false; ///< ローカル生演奏調整の有効フラグ
-		int                             lead_time_ms         = 500;   ///< 配信チャンネルに対する先行時間 (ms)
-		std::array<ChDelay, MAX_SUB_CH> channels{};                   ///< チャンネルごとのディレイ計算入力
-
-		/// 1 チャンネルの補正前ディレイ値を計算する。
-		static int calc_ch_raw_delay_ms(int rtsp_e2e_ms,
-										int avatar_latency_ms,
-										int ch_measured_ms,
-										int playback_buffer_ms,
-										int offset_ms) {
-			return rtsp_e2e_ms - avatar_latency_ms - ch_measured_ms - playback_buffer_ms - offset_ms;
-		}
-
-		/// 表示順テーブルを指定してディレイを一括計算する（スロットインデックス版）。
-		/// 結果は snap.channels[slot] にスロットインデックスで格納される。
-		DelaySnapshot calc_all_delays(
-			const std::array<core::Slot, MAX_SUB_CH> &display_order,
-			int                                       active_count) const {
+		/// D = max(0, A - R) を計算する。
+		DelaySnapshot calc_all_delays() const {
 			DelaySnapshot snap;
-			snap.active_count = active_count;
-
-			const int R = measured_rtsp_e2e_ms;
-			const int A = avatar_latency_ms;
-			const int B = playback_buffer_ms;
-
-			// 計測済みチャンネルの最小 WS 遅延を求める（仮値の基準）
-			int min_measured = INT_MAX;
-			for (int di = 0; di < active_count; ++di) {
-				const int slot = display_order[di];
-				if (channels[slot].ws_measured && channels[slot].measured_ms < min_measured)
-					min_measured = channels[slot].measured_ms;
-			}
-			const bool has_any = (min_measured != INT_MAX);
-
-			for (int di = 0; di < active_count; ++di) {
-				const int slot      = display_order[di];
-				auto     &out       = snap.channels[slot];
-				out.has_measurement = channels[slot].ws_measured;
-				if (!out.has_measurement) {
-					if (!has_any) {
-						out.raw_ms = 0;
-						continue;
-					}
-					out.provisional = true;
-					out.raw_ms      = calc_ch_raw_delay_ms(R, A, min_measured, B, channels[slot].offset_ms);
-				} else {
-					out.raw_ms = calc_ch_raw_delay_ms(R, A, channels[slot].measured_ms, B, channels[slot].offset_ms);
-				}
-				if (out.raw_ms < 0 && -out.raw_ms > snap.neg_max_ms)
-					snap.neg_max_ms = -out.raw_ms;
-			}
-
-			for (int di = 0; di < active_count; ++di) {
-				const int slot = display_order[di];
-				auto     &out  = snap.channels[slot];
-				if (out.has_measurement || out.provisional) {
-					int val      = out.raw_ms + snap.neg_max_ms;
-					out.total_ms = (val > 0) ? val : 0;
-					out.warn     = (snap.neg_max_ms > 0 && out.raw_ms == -snap.neg_max_ms);
-				}
-			}
-
-			snap.master_delay_ms   = snap.neg_max_ms;
-			snap.live_perf_enabled = live_perf_enabled;
-			snap.live_lead_ms      = lead_time_ms;
-			// ローカル生演奏調整: ローカル演奏者はソースをリアルタイムに聴くため、その聴取タイミングには
-			// ディレイをかけられない（調整不能）。プラグイン挿入ch（共演者向けWS配信専用の先行ch）は
-			// 配信chより lead_time_ms 先行給餌される前提で、調整できないローカル聴取へ共演者を合わせる。
-			//   min_lead   = 共演者が聴くタイミング(= neg_max + R - A)。Lead はこれ以上必要。
-			//   live_extra = Lead - min_lead を共演者向けWSチャンネルディレイへ加算してローカル聴取に揃える。
-			//   R > A は解決不能: 配信は生演奏(リアルタイム信号)を乗せるため、配信に要する追加オフセット
-			//                     (A-R)を負(前倒し)にできない。先行時間では救えず低遅延な配信サービスが必要。
-			// 設計の詳細・図解・運用上の注意は docs/live-performance.md を参照。
-			if (live_perf_enabled) {
-				snap.live_min_lead_ms      = snap.neg_max_ms + R - A;
-				snap.live_service_too_slow = R > A;
-				snap.live_lead_too_short =
-					!snap.live_service_too_slow && lead_time_ms < snap.live_min_lead_ms;
-				snap.live_perf_ok =
-					!snap.live_service_too_slow && !snap.live_lead_too_short;
-
-				if (snap.live_perf_ok) {
-					snap.live_extra_ms = lead_time_ms - snap.live_min_lead_ms;
-					// total_ms を設定済みのチャンネル（計測済み or 仮値）にのみ加算する。
-					// 未設定（全 ch 未計測）の total_ms=0 を live_extra で汚さない。
-					for (int di = 0; di < active_count; ++di) {
-						const int slot = display_order[di];
-						auto     &out  = snap.channels[slot];
-						if (out.has_measurement || out.provisional)
-							out.total_ms += snap.live_extra_ms;
-					}
-					snap.master_delay_ms += snap.live_extra_ms;
-				}
-			}
+			snap.rtsp_e2e_measured = rtsp_e2e_measured;
+			const int R            = measured_rtsp_e2e_ms;
+			const int A            = avatar_latency_ms;
+			snap.service_too_slow  = rtsp_e2e_measured && R > A;
+			snap.master_delay_ms   = snap.service_too_slow ? 0 : ((A > R) ? (A - R) : 0);
 			return snap;
 		}
 	};

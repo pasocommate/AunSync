@@ -2,7 +2,7 @@
 
 ## 言語ポリシー
 
-**日本語を基本**とする。固有名詞（OBS, WebSocket, Opus, cloudflared）・型名・変数名はアルファベット表記。
+**日本語を基本**とする。固有名詞（OBS, FFmpeg）・型名・変数名はアルファベット表記。
 
 ---
 
@@ -12,12 +12,10 @@
 
 ```cpp
 /**
- * WebSocket サーバーとして動作し、複数チャンネルの音声配信と
- * RTT 計測を管理する。
- *
- * 接続 URL: ws://[IP]:19000/[stream_id]/[ch]
+ * RTSP ストリームを FFmpeg サブプロセスで受信し、
+ * 注入プローブ信号の到達時刻から E2E 遅延を算出する。
  */
-class StreamRouter { ... };
+class RtspE2eProber { ... };
 ```
 
 **使用場所**: public ヘッダー上の `class` / `struct` 定義
@@ -26,19 +24,18 @@ class StreamRouter { ... };
 
 ```cpp
 // メンバ変数
-struct LatencyResult {
+struct RtspE2eResult {
     bool        valid;          ///< 計測成功フラグ
-    double      avg_rtt_ms;     ///< 平均 RTT (ms)
-    double      avg_latency_ms; ///< 推定片道レイテンシ = RTT / 2
-    int         samples;        ///< サンプル総数（外れ値除外前）
-    int         used_samples;   ///< 統計計算に使用したサンプル数
-    const char *method;         ///< 計算手法: "median" / "trimmed" / "iqr"
+    double      latency_ms;     ///< E2E 片道レイテンシ推定値（中央値, ms）
+    double      min_latency_ms; ///< 試行結果の最小値 (ms)
+    double      max_latency_ms; ///< 試行結果の最大値 (ms)
+    std::string error_msg;      ///< 失敗理由
 };
 
 // 短い関数宣言が連続する箇所
-void start(); ///< WebSocket サーバーを起動する
-void stop();  ///< 停止してすべての接続を切断する
-int  port();  ///< 待受ポート番号を返す
+void start();    ///< 計測ワーカーを起動する
+void cancel();   ///< 実行中の計測をキャンセルする
+bool is_running() const; ///< 計測ワーカーが実行中か返す
 ```
 
 **使用場所**: 1行で収まる宣言すべて（メンバ変数・関数宣言）  
@@ -47,10 +44,10 @@ private メンバは非自明な場合のみ（単位・上限・特殊な初期
 ### `///` — `@param` / `@return` が必要な関数（前置コメント）
 
 ```cpp
-/// RTT 計測を開始する。計測中の再呼び出しは無視される。
-/// @param ch       チャンネル番号 (0-indexed)
-/// @param attempts ping 送信回数
-bool start_measurement(int ch, int attempts);
+/// RTSP E2E 計測を開始する。計測中の再呼び出しは無視される。
+/// @param rtsp_url         計測対象の RTSP URL
+/// @param ffmpeg_path_hint ffmpeg.exe の配置ヒントパス
+bool start(const std::string &rtsp_url, const std::string &ffmpeg_path_hint);
 ```
 
 **使用場所**: パラメータや戻り値の説明が必要な public 関数  
@@ -105,14 +102,13 @@ int pos = (write_pos_ - delay_samples_ + buf_size_) % buf_size_; // 負数対策
 
 ```cpp
 /*
- * rtmp-prober.cpp
+ * rtsp-e2e-prober.cpp
  *
  * 計測ステップ:
- *   1. TCP SYN → SYN-ACK (TCP RTT)
- *   2. RTMP C0+C1 送信 → S0+S1 受信 (RTMP handshake RTT)
- *   ...
- *
- * Windows (Winsock2) のみ対応。
+ *   1. ffmpeg サブプロセスで RTSP ストリームを受信開始
+ *   2. プローブ信号（チャープ）を audio-processor から注入
+ *   3. ffmpeg の受信音声からプローブ到達時刻を検出
+ *   4. 注入時刻との差分を E2E 遅延として返す
  */
 ```
 
@@ -137,7 +133,7 @@ int pos = (write_pos_ - delay_samples_ + buf_size_) % buf_size_; // 負数対策
  */
 namespace ods::core {
 
-// delay-buffer.hpp（同じ名前空間を開くが、コメントは書かない）
+// delay-buffer.hpp（同じ名前空間を開くが、ファイルヘッダーコメントは書かない）
 namespace ods::core {
 ```
 

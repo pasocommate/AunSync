@@ -4,46 +4,25 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+
 #include "audio/audio-processor.hpp"
 #include "core/constants.hpp"
-#include "plugin/plugin-assets.hpp"
 #include "plugin/plugin-config.hpp"
 #include "plugin/plugin-helpers.hpp"
 #include "plugin/plugin-services.hpp"
 #include "plugin/plugin-settings.hpp"
 #include "plugin/plugin-state.hpp"
-#include "plugin/plugin-utils.hpp"
 #include "plugin/release-check.hpp"
 #include "ui/properties-builder.hpp"
-#include "ui/properties-channels.hpp"
 #include "ui/properties-delay.hpp"
-#include "ui/properties-url-share.hpp"
-#include "model/settings-repo.hpp"
 #include "viewmodel/delay-viewmodel.hpp"
-#include "widgets/button-bar-widget.hpp"
-#include "widgets/color-buttons-widget.hpp"
 #include "widgets/delay-diagram-widget.hpp"
-#include "widgets/delay-table-widget.hpp"
-#include "widgets/flow-progress-widget.hpp"
 #include "widgets/help-callout-widget.hpp"
-#include "widgets/flow-table-widget.hpp"
-#include "widgets/mode-text-row-widget.hpp"
-#include "widgets/path-mode-row-widget.hpp"
-#include "widgets/pulldown-row-widget.hpp"
-#include "widgets/stepper-widget.hpp"
-#include "widgets/text-button-widget.hpp"
-#include "widgets/url-table-widget.hpp"
 
 #include <QApplication>
 #include <QTimer>
-#include <algorithm>
-#include <array>
 #include <atomic>
-#include <chrono>
-#include <cmath>
 #include <cstdint>
-#include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <memory>
@@ -51,29 +30,17 @@
 #include <obs-module.h>
 #include <string>
 #include <thread>
-#include <vector>
 
 OBS_DECLARE_MODULE()
-OBS_MODULE_USE_DEFAULT_LOCALE("obs-delay-stream", "ja-JP")
-#define T_(s) obs_module_text(s)
+OBS_MODULE_USE_DEFAULT_LOCALE("aunsync", "ja-JP")
 
-// OBSプロセス内では本フィルタを1インスタンスだけ許可する。
-// bool フラグではなくソースポインタ＋世代カウンタで管理することで、
-// OBS が destroy 前に create を呼ぶ "recreate パターン" を正しく扱う。
 static std::mutex    g_singleton_mtx;
 static obs_source_t *g_singleton_owner      = nullptr;
 static uint64_t      g_singleton_generation = 0;
 
-using ods::plugin::get_local_ip;
-using ods::plugin::make_sub_measured_key;
 using ods::plugin::DelayStreamData;
 using ods::plugin::UpdateCheckStatus;
-using ods::plugin::SubChannelCtx;
-using ods::network::LatencyResult;
-using namespace ods::core;
-using namespace ods::widgets;
 
-// OBS の各コールバックを受け、DelayStreamData のライフサイクルを統括する。
 class DelayStreamFilter {
 public:
 
@@ -87,45 +54,14 @@ public:
 
 private:
 
-	static bool cb_measure_subchannel(obs_properties_t *, obs_property_t *, void *);
-
-	static void save_measurement_and_recalc(DelayStreamData *);
 	static void queue_ui_safe(DelayStreamData *, std::function<void(DelayStreamData *)>);
-	static void setup_event_callbacks(DelayStreamData *);
-	static void clear_event_callbacks(DelayStreamData *);
-	static void schedule_widget_injects_for_tab(DelayStreamData *, int);
-	static void schedule_auto_measure(DelayStreamData *, int);
+	static void schedule_widget_injects(DelayStreamData *);
 	static void schedule_audio_sync_check(DelayStreamData *, std::weak_ptr<std::atomic<bool>>);
 	static void start_update_check_async(DelayStreamData *, std::weak_ptr<std::atomic<bool>>);
 	static void schedule_update_check(DelayStreamData *, std::weak_ptr<std::atomic<bool>>, bool);
 };
 
-// 計測結果と計測済みフラグを OBS 設定に書き戻し、全チャンネルディレイを再計算する。
-void DelayStreamFilter::save_measurement_and_recalc(DelayStreamData *d) {
-	obs_data_t              *settings = obs_source_get_settings(d->context);
-	ods::model::SettingsRepo repo(settings);
-	repo.set_measured_rtsp_e2e_ms(d->delay.measured_rtsp_e2e_ms);
-	repo.set_rtsp_e2e_measured(d->delay.rtsp_e2e_measured);
-	for (int i = 0; i < MAX_SUB_CH; ++i) {
-		auto &ch = d->delay.channels[i];
-		repo.set_ch_measured_ms(i, ch.measured_ms);
-		repo.set_ch_ws_measured(i, ch.ws_measured);
-		// 計測値が変わった結果、負のオフセットが C[i] を超える場合はクランプ
-		if (ch.ws_measured && ch.offset_ms < -ch.measured_ms) {
-			ch.offset_ms   = -ch.measured_ms;
-			const auto key = ods::plugin::make_sub_offset_key(i);
-			obs_data_set_int(settings, key.data(), ch.offset_ms);
-		}
-	}
-	obs_data_release(settings);
-	ods::plugin::recalc_all_delays(d);
-}
-
-// コールバックスレッドから OBS UI スレッドへ安全にディスパッチするヘルパー。
-// life_token が無効なら fn は呼ばれない（use-after-free 防止）。
-void DelayStreamFilter::queue_ui_safe(DelayStreamData                       *d,
-									  std::function<void(DelayStreamData *)> fn) {
-	// UI スレッドへ渡す最小コンテキスト。life_token で破棄後実行を防ぐ。
+void DelayStreamFilter::queue_ui_safe(DelayStreamData *d, std::function<void(DelayStreamData *)> fn) {
 	struct Ctx {
 		std::weak_ptr<std::atomic<bool>>       life_token;
 		DelayStreamData                       *d;
@@ -133,138 +69,18 @@ void DelayStreamFilter::queue_ui_safe(DelayStreamData                       *d,
 	};
 	auto c = std::make_unique<Ctx>(Ctx{d->life_token, d, std::move(fn)});
 	obs_queue_task(OBS_TASK_UI, [](void *p) {
-		auto  c = std::unique_ptr<Ctx>(static_cast<Ctx *>(p));
+		auto c = std::unique_ptr<Ctx>(static_cast<Ctx *>(p));
 		auto life = c->life_token.lock();
 		if (life && life->load(std::memory_order_acquire))
-					c->fn(c->d); }, c.release(), false);
+			c->fn(c->d); }, c.release(), false);
 }
 
-// steady_clock の現在時刻をミリ秒整数で返す。
-static int64_t steady_now_ms() {
-	return std::chrono::duration_cast<std::chrono::milliseconds>(
-			   DelayStreamData::SteadyClock::now().time_since_epoch())
-		.count();
-}
-
-// 接続後の安定化待機を経てチャンネル単位の自動計測を開始する。
-// 接続確立時刻 (ch_connected_at_ms) から AUTO_MEASURE_DELAY_MS が
-// 経過済みなら即座に開始し、未経過なら残り時間だけスリープする。
-// life_token でフィルタ破棄後の実行を防ぐ。
-void DelayStreamFilter::schedule_auto_measure(DelayStreamData *d, int ch) {
-	bool expected = false;
-	if (!d->auto_measure_pending[ch].compare_exchange_strong(expected, true))
-		return;
-	auto life = std::weak_ptr<std::atomic<bool>>(d->life_token);
-	try {
-		std::thread([d, ch, life]() {
-			// 接続確立からの経過時間を見て、安定化待機の残り分だけスリープ
-			int64_t connected_at = d->ch_connected_at_ms[ch].load(std::memory_order_relaxed);
-			int64_t remaining_ms = AUTO_MEASURE_DELAY_MS;
-			if (connected_at > 0)
-				remaining_ms = std::max<int64_t>(0, AUTO_MEASURE_DELAY_MS - (steady_now_ms() - connected_at));
-			if (remaining_ms > 0)
-				std::this_thread::sleep_for(std::chrono::milliseconds(remaining_ms));
-			auto token = life.lock();
-			if (!token || !token->load(std::memory_order_acquire)) {
-				d->auto_measure_pending[ch].store(false);
-				return;
-			}
-			if (!d->auto_measure_enabled.load() ||
-				d->delay.channels[ch].ws_measured ||
-				d->router.client_count(ch) == 0 ||
-				!d->router_running.load()) {
-				d->auto_measure_pending[ch].store(false);
-				return;
-			}
-			int pings = d->ping_count_setting.load(std::memory_order_relaxed);
-			// 他チャンネルが計測中でなければカウンタをリセット
-			if (!d->ws_any_measuring())
-				d->ws_batch_progress.reset();
-			// 分母にこのチャンネルの ping 数を加算
-			d->ws_batch_progress.ping_total_count.fetch_add(
-				pings,
-				std::memory_order_relaxed);
-			// 全チャンネル共通のコールバックで進捗を更新する
-			d->router.on_any_ping_sent = [d](const std::string &sid, int, int) {
-				if (sid != d->get_stream_id()) return;
-				const int sent  = d->ws_batch_progress.ping_sent_count.fetch_add(
-									  1,
-									  std::memory_order_relaxed) +
-								  1;
-				const int total = d->ws_batch_progress.ping_total_count.load(
-					std::memory_order_relaxed);
-				const int pct = (total > 0) ? (sent * 100 / total) : 0;
-				update_flow_progress(d->context, pct);
-			};
-			if (d->router.start_measurement(ch, pings, PING_INTV_MS)) {
-				d->sub_channels[ch].measure.start();
-				d->request_props_refresh_for_tabs(
-					{TAB_SYNC_LATENCY, TAB_FINE_ADJUST},
-					"auto_measure_start");
-				blog(LOG_INFO,
-					 "[obs-delay-stream] auto-measure started for ch=%d",
-					 ch + 1);
-			}
-			d->auto_measure_pending[ch].store(false);
-		}).detach();
-	} catch (...) {
-		d->auto_measure_pending[ch].store(false);
-	}
-}
-
-// 表示中タブに必要なカスタムウィジェット注入だけを優先的にスケジュールする。
-void DelayStreamFilter::schedule_widget_injects_for_tab(DelayStreamData *d, int active_tab) {
+void DelayStreamFilter::schedule_widget_injects(DelayStreamData *d) {
 	if (!d || !d->context) return;
-	obs_source_t *ctx = d->context;
-
-	// タブセレクタを含む色ボタン行は常に必要。
-	schedule_color_button_row_inject(ctx);
-
-	switch (active_tab) {
-	case TAB_PERFORMER_NAMES:
-		schedule_text_button_inject(ctx);
-		schedule_button_bar_inject(ctx);
-		break;
-	case TAB_TUNNEL:
-		schedule_text_button_inject(ctx);
-		schedule_path_mode_row_inject(ctx);
-		schedule_help_callout_inject(ctx);
-		schedule_button_bar_inject(ctx);
-		break;
-	case TAB_AUDIO_STREAMING:
-		schedule_pulldown_row_inject(ctx);
-		schedule_stepper_inject(ctx);
-		schedule_help_callout_inject(ctx);
-		schedule_button_bar_inject(ctx);
-		break;
-	case TAB_URL_SHARING:
-		schedule_url_table_inject(ctx);
-		schedule_button_bar_inject(ctx);
-		break;
-	case TAB_RTSP_LATENCY:
-		schedule_flow_progress_inject(ctx);
-		schedule_help_callout_inject(ctx);
-		schedule_path_mode_row_inject(ctx);
-		schedule_mode_text_row_inject(ctx);
-		schedule_button_bar_inject(ctx);
-		break;
-	case TAB_SYNC_LATENCY:
-		schedule_flow_progress_inject(ctx);
-		schedule_flow_table_inject(ctx);
-		schedule_button_bar_inject(ctx);
-		break;
-	case TAB_FINE_ADJUST:
-		schedule_stepper_inject(ctx);
-		schedule_help_callout_inject(ctx);
-		schedule_delay_diagram_inject(ctx);
-		schedule_delay_table_inject(ctx);
-		break;
-	default:
-		break;
-	}
+	ods::widgets::schedule_help_callout_inject(d->context);
+	ods::widgets::schedule_delay_diagram_inject(d->context);
 }
 
-// 音声同期オフセットを定期的に確認し、UIに表示している値と変化があればプロパティを再描画する。
 void DelayStreamFilter::schedule_audio_sync_check(
 	DelayStreamData                 *d,
 	std::weak_ptr<std::atomic<bool>> life_token_weak) {
@@ -272,16 +88,14 @@ void DelayStreamFilter::schedule_audio_sync_check(
 	QTimer::singleShot(kIntervalMs, qApp, [d, life_token_weak]() {
 		auto token = life_token_weak.lock();
 		if (!token || !token->load(std::memory_order_acquire)) return;
+
 		int64_t current = INT64_MIN;
 		ods::plugin::try_get_parent_audio_sync_offset_ns(d->context, current);
 		const int64_t last =
 			d->last_rendered_audio_sync_offset_ns.load(std::memory_order_relaxed);
-		if (current != last) {
+		if (current != last)
 			d->request_props_refresh("audio_sync_offset_poll");
-		}
 
-		// 配信トラック割当を監視し、計測タブの注意表示状態が変われば再描画する。
-		// 詳細音声プロパティでのトラック変更はコールバックを発火しないためポーリングで拾う。
 		const bool streaming = ods::plugin::is_obs_streaming_active();
 		bool       on_track  = false;
 		if (ods::plugin::try_get_parent_on_streaming_track(d->context, on_track)) {
@@ -293,14 +107,13 @@ void DelayStreamFilter::schedule_audio_sync_check(
 				streaming);
 			const int note_i = static_cast<int>(note);
 			if (note_i != d->rtsp_track_note_state.exchange(note_i, std::memory_order_relaxed))
-				d->request_props_refresh_for_tabs({TAB_RTSP_LATENCY}, "rtsp_track_note_poll");
+				d->request_props_refresh("rtsp_track_note_poll");
 		}
 
 		schedule_audio_sync_check(d, life_token_weak);
 	});
 }
 
-// 最新リリース確認をバックグラウンドで実行し、UIスレッドで結果を反映する。
 void DelayStreamFilter::start_update_check_async(
 	DelayStreamData                 *d,
 	std::weak_ptr<std::atomic<bool>> life_token_weak) {
@@ -321,7 +134,6 @@ void DelayStreamFilter::start_update_check_async(
 			const bool                     has_update =
 				ok && ods::plugin::is_newer_version(info.latest_version, PLUGIN_VERSION);
 
-			// ワーカー結果を UI スレッドへ受け渡すためのコンテキスト。
 			struct Ctx {
 				std::weak_ptr<std::atomic<bool>> life_token;
 				DelayStreamData                 *d;
@@ -329,45 +141,24 @@ void DelayStreamFilter::start_update_check_async(
 				bool                             has_update = false;
 				ods::plugin::LatestReleaseInfo   info;
 			};
-			auto ctx = std::make_unique<Ctx>(Ctx{
-				life_token_weak,
-				d,
-				ok,
-				has_update,
-				std::move(info)});
+			auto ctx = std::make_unique<Ctx>(Ctx{life_token_weak, d, ok, has_update, std::move(info)});
 			obs_queue_task(OBS_TASK_UI, [](void *p) {
-				auto  ctx = std::unique_ptr<Ctx>(static_cast<Ctx *>(p));
-				auto  life = ctx->life_token.lock();
-				if (life && life->load(std::memory_order_acquire)) {
-					DelayStreamData *d = ctx->d;
-					d->update_check.set_strings(
-						ctx->info.latest_version,
-						ctx->info.release_url,
-						ctx->info.error);
-					UpdateCheckStatus new_status = UpdateCheckStatus::Error;
-					if (ctx->ok) {
-						new_status = ctx->has_update
-										 ? UpdateCheckStatus::UpdateAvailable
-										 : UpdateCheckStatus::UpToDate;
-					}
-					const UpdateCheckStatus prev =
-						d->update_check.status.exchange(new_status, std::memory_order_acq_rel);
-					d->update_check.inflight.store(false, std::memory_order_release);
-					if (new_status == UpdateCheckStatus::UpdateAvailable || prev != new_status) {
-						d->request_props_refresh("release_update_check");
-					}
-					if (ctx->ok) {
-						blog(LOG_INFO,
-							 "[obs-delay-stream] update check done latest=v%s current=v%s has_update=%d",
-							 d->update_check.latest_version().c_str(),
-							 PLUGIN_VERSION,
-							 new_status == UpdateCheckStatus::UpdateAvailable ? 1 : 0);
-					} else {
-						blog(LOG_WARNING,
-							 "[obs-delay-stream] update check failed: %s",
-							 d->update_check.error().c_str());
-					}
-				} }, ctx.release(), false);
+				auto ctx = std::unique_ptr<Ctx>(static_cast<Ctx *>(p));
+				auto life = ctx->life_token.lock();
+				if (!life || !life->load(std::memory_order_acquire)) return;
+				DelayStreamData *d = ctx->d;
+				d->update_check.set_strings(
+					ctx->info.latest_version,
+					ctx->info.release_url,
+					ctx->info.error);
+				UpdateCheckStatus new_status = UpdateCheckStatus::Error;
+				if (ctx->ok)
+					new_status = ctx->has_update ? UpdateCheckStatus::UpdateAvailable : UpdateCheckStatus::UpToDate;
+				const UpdateCheckStatus prev =
+					d->update_check.status.exchange(new_status, std::memory_order_acq_rel);
+				d->update_check.inflight.store(false, std::memory_order_release);
+				if (new_status == UpdateCheckStatus::UpdateAvailable || prev != new_status)
+					d->request_props_refresh("release_update_check"); }, ctx.release(), false);
 		}).detach();
 	} catch (...) {
 		d->update_check.inflight.store(false, std::memory_order_release);
@@ -376,7 +167,6 @@ void DelayStreamFilter::start_update_check_async(
 	}
 }
 
-// 初回起動時と一定間隔で更新確認を行う。
 void DelayStreamFilter::schedule_update_check(
 	DelayStreamData                 *d,
 	std::weak_ptr<std::atomic<bool>> life_token_weak,
@@ -393,185 +183,54 @@ void DelayStreamFilter::schedule_update_check(
 }
 
 const char *DelayStreamFilter::get_name(void *) {
-	return "obs-delay-stream";
+	return "AunSync";
 }
 
-// OBS フロントエンドイベント (配信開始/停止) でタブ 3・4 を再描画する。
-// obs-frontend-api.h の enum obs_frontend_event の値に対応する。
 constexpr int kFrontendStreamingStarted = 1;
 constexpr int kFrontendStreamingStopped = 3;
 
 void on_frontend_event(int event, void *private_data) {
-	if (event != kFrontendStreamingStarted &&
-		event != kFrontendStreamingStopped)
+	if (event != kFrontendStreamingStarted && event != kFrontendStreamingStopped)
 		return;
 	auto *d = static_cast<DelayStreamData *>(private_data);
 	if (!d || d->destroying.load(std::memory_order_acquire)) return;
-	d->request_props_refresh_for_tabs({TAB_SYNC_LATENCY, TAB_RTSP_LATENCY}, "frontend_streaming_state");
+	d->request_props_refresh("frontend_streaming_state");
 }
 
-// 各コンポーネントのイベントコールバックを登録する。
-void DelayStreamFilter::setup_event_callbacks(DelayStreamData *d) {
-	d->tunnel.on_url_ready = [d](const std::string &) {
-		std::this_thread::sleep_for(std::chrono::milliseconds(100));
-		d->request_props_refresh_for_tabs({TAB_TUNNEL, TAB_URL_SHARING}, "tunnel.on_url_ready");
-	};
-	d->tunnel.on_error = [d](const std::string &) {
-		std::this_thread::sleep_for(std::chrono::milliseconds(100));
-		d->request_props_refresh_for_tabs({TAB_TUNNEL}, "tunnel.on_error");
-	};
-	d->tunnel.on_stopped = [d]() {
-		std::this_thread::sleep_for(std::chrono::milliseconds(100));
-		d->request_props_refresh_for_tabs({TAB_TUNNEL, TAB_URL_SHARING}, "tunnel.on_stopped");
-	};
-	d->tunnel.on_download_state = [d](bool downloading) {
-		if (!downloading) {
-			queue_ui_safe(d, [](DelayStreamData *d) {
-				ods::plugin::maybe_persist_cloudflared_path_after_auto_ready(d->context);
-				d->request_props_refresh_for_tabs({TAB_TUNNEL}, "tunnel.on_download_state.done");
-			});
-			return;
-		}
-		d->request_props_refresh_for_tabs({TAB_TUNNEL}, "tunnel.on_download_state");
-	};
-	d->router.on_conn_change = [d](const std::string &sid, int ch, size_t count) {
-		if (sid != d->get_stream_id()) return;
-		if (ch < 0 || ch >= MAX_SUB_CH) return;
-		// 初回接続時刻を記録（切断時はクリア）
-		if (count > 0) {
-			int64_t expected = 0;
-			d->ch_connected_at_ms[ch].compare_exchange_strong(
-				expected,
-				steady_now_ms(),
-				std::memory_order_relaxed);
-		} else {
-			d->ch_connected_at_ms[ch].store(0, std::memory_order_relaxed);
-		}
-		d->request_props_refresh_for_tabs({TAB_SYNC_LATENCY}, "router.on_conn_change");
-		if (count > 0) {
-			if (d->delay.channels[ch].ws_measured) {
-				// 計測済みチャンネル: タイミング図キャッシュを最新化して送信する
-				queue_ui_safe(d, [](DelayStreamData *dd) {
-					recalc_all_delays(dd);
-				});
-			} else if (d->auto_measure_enabled.load() && d->layout.is_active(ch)) {
-				// 未計測チャンネル: 自動計測をスケジュール
-				schedule_auto_measure(d, ch);
-			}
-		}
-	};
-	d->router.on_any_latency_result = [d](const std::string &sid, int ch, LatencyResult r) {
-		if (sid != d->get_stream_id()) return;
-		if (ch < 0 || ch >= MAX_SUB_CH) return;
-		d->sub_channels[ch].measure.set_result(r, r.valid ? "" : T_("MeasureFailed"));
-		if (r.valid) {
-			queue_ui_safe(d, [ch, ms_val = static_cast<int>(std::lround(r.avg_latency_ms))](DelayStreamData *d) {
-				d->delay.channels[ch].measured_ms = ms_val;
-				d->delay.channels[ch].ws_measured = true;
-				// recalc_all_delays 内で全計測済みチャンネルのタイミング図も再送信される
-				save_measurement_and_recalc(d);
-				d->request_props_refresh_for_tabs(
-					{TAB_SYNC_LATENCY, TAB_FINE_ADJUST},
-					"router.on_any_latency_result.apply");
-			});
-		} else {
-			d->request_props_refresh_for_tabs(
-				{TAB_SYNC_LATENCY, TAB_FINE_ADJUST},
-				"router.on_any_latency_result.invalid");
-		}
-	};
-	// 接続済み未計測チャンネルをスキャンして自動計測をスケジュールする。
-	// auto_measure チェックボックスの ON 切り替え時やリセット後に呼ばれる。
-	d->trigger_auto_measure_scan = [d]() {
-		if (!d->auto_measure_enabled.load()) return;
-		if (!d->router_running.load()) return;
-		const int n_ch = d->layout.count.load(std::memory_order_relaxed);
-		for (int di = 0; di < n_ch; ++di) {
-			const int ch = d->layout.display_order[di];
-			if (ch >= 0 && ch < MAX_SUB_CH &&
-				d->layout.is_active(ch) &&
-				d->router.client_count(ch) > 0 &&
-				!d->delay.channels[ch].ws_measured) {
-				schedule_auto_measure(d, ch);
-			}
-		}
-	};
-	ods::plugin::add_obs_frontend_event_callback(on_frontend_event, d);
-}
-
-// 全コンポーネントのイベントコールバックを解除する。
-void DelayStreamFilter::clear_event_callbacks(DelayStreamData *d) {
-	ods::plugin::remove_obs_frontend_event_callback(on_frontend_event, d);
-	d->tunnel.on_url_ready       = nullptr;
-	d->tunnel.on_error           = nullptr;
-	d->tunnel.on_stopped         = nullptr;
-	d->tunnel.on_download_state  = nullptr;
-	d->trigger_auto_measure_scan = nullptr;
-	d->router.clear_callbacks();
-}
-
-// フィルタインスタンスを生成して各コンポーネントを初期化する。
 void *DelayStreamFilter::create(obs_data_t *settings, obs_source_t *source) {
-	blog(LOG_INFO, "[obs-delay-stream] create START source=%s", obs_source_get_name(source));
-	auto *d = new DelayStreamData();
-	blog(LOG_INFO, "[obs-delay-stream] create: DelayStreamData allocated at %p", (void *)d);
+	blog(LOG_INFO, "[aunsync] create START source=%s", obs_source_get_name(source));
+	auto *d    = new DelayStreamData();
 	d->context = source;
+
 	{
 		std::lock_guard<std::mutex> lk(g_singleton_mtx);
 		if (g_singleton_owner == nullptr || g_singleton_owner == source) {
-			g_singleton_owner        = source;
-			d->singleton_generation  = ++g_singleton_generation;
-			d->is_duplicate_instance = false;
-			d->owns_singleton_slot   = true;
+			g_singleton_owner       = source;
+			d->singleton_generation = ++g_singleton_generation;
+			d->owns_singleton_slot  = true;
 		} else {
-			blog(LOG_WARNING,
-				 "[obs-delay-stream] create: slot already owned by source=%s; "
-				 "marking new instance (source=%s) as duplicate",
-				 obs_source_get_name(g_singleton_owner),
-				 obs_source_get_name(source));
 			d->is_duplicate_instance = true;
 			d->owns_singleton_slot   = false;
 		}
 	}
 	ods::ui::props_refresh_unblock_source(source);
 	if (d->is_duplicate_instance) {
-		blog(LOG_WARNING, "[obs-delay-stream] duplicate filter instance created as warning-only");
 		d->create_done.store(true);
 		return d;
 	}
+
 	std::string settings_reason;
 	if (!ods::plugin::validate_settings_compatibility(settings, settings_reason)) {
 		d->has_settings_mismatch = true;
 		d->enabled.store(false, std::memory_order_relaxed);
-		d->ws_send_enabled.store(false, std::memory_order_relaxed);
-		blog(LOG_WARNING,
-			 "[obs-delay-stream] settings compatibility check failed; warning-only mode: %s",
-			 settings_reason.c_str());
+		blog(LOG_WARNING, "[aunsync] settings compatibility check failed: %s", settings_reason.c_str());
 		d->create_done.store(true);
 		return d;
 	}
+
 	ods::plugin::maybe_autofill_rtmp_url(settings, false);
 	d->rtmp_url_auto.store(obs_data_get_bool(settings, "rtmp_url_auto"), std::memory_order_relaxed);
-	{
-		auto html = ods::plugin::load_receiver_index_html();
-		if (html.empty()) {
-			blog(LOG_WARNING, "[obs-delay-stream] receiver/index.html not found; HTTP top page disabled");
-		} else {
-			blog(LOG_INFO, "[obs-delay-stream] receiver html loaded: build=%s", ods::plugin::get_receiver_build_timestamp());
-		}
-		d->router.set_http_index_html(std::move(html));
-		auto root = ods::plugin::get_receiver_root_dir();
-		if (!root.empty()) d->router.set_http_root_dir(std::move(root));
-	}
-	d->auto_ip = get_local_ip();
-	d->host_ip = d->auto_ip;
-	for (int i = 0; i < MAX_SUB_CH; ++i) {
-		d->sub_btn_ctx[i] = {d, i};
-	}
-	for (int i = 0; i < TAB_COUNT; ++i) {
-		d->tab_btn_ctx[i] = {d, i};
-	}
-	setup_event_callbacks(d);
+	ods::plugin::add_obs_frontend_event_callback(on_frontend_event, d);
 
 	update(d, settings);
 	d->create_done.store(true);
@@ -580,11 +239,10 @@ void *DelayStreamFilter::create(obs_data_t *settings, obs_source_t *source) {
 		schedule_audio_sync_check(dp, life);
 		schedule_update_check(dp, life, true);
 	});
-	blog(LOG_INFO, "[obs-delay-stream] create complete");
+	blog(LOG_INFO, "[aunsync] create complete");
 	return d;
 }
 
-// フィルタインスタンス破棄時に各コンポーネントを安全に停止する。
 void DelayStreamFilter::destroy(void *data) {
 	auto d = std::unique_ptr<DelayStreamData>(static_cast<DelayStreamData *>(data));
 	if (!d) return;
@@ -593,25 +251,21 @@ void DelayStreamFilter::destroy(void *data) {
 		d->life_token->store(false, std::memory_order_release);
 		d->life_token.reset();
 	}
-	if (d->context) {
+	if (d->context)
 		ods::ui::props_refresh_block_source(d->context);
-		flow_progress_unregister_source(d->context);
-	}
-	bool          release_singleton_slot = d->owns_singleton_slot;
-	obs_source_t *my_source              = d->context;
-	uint64_t      my_gen                 = d->singleton_generation;
+
+	const bool     release_singleton_slot = d->owns_singleton_slot;
+	obs_source_t  *my_source              = d->context;
+	const uint64_t my_gen                 = d->singleton_generation;
 	if (!d->is_warning_only_instance()) {
 		d->rtsp_e2e_measure.cancel();
-		d->tunnel.stop();
-		d->router.stop();
-		clear_event_callbacks(d.get());
+		ods::plugin::remove_obs_frontend_event_callback(on_frontend_event, d.get());
 	}
 	d.reset();
 	if (release_singleton_slot) {
 		std::lock_guard<std::mutex> lk(g_singleton_mtx);
-		if (g_singleton_owner == my_source && g_singleton_generation == my_gen) {
+		if (g_singleton_owner == my_source && g_singleton_generation == my_gen)
 			g_singleton_owner = nullptr;
-		}
 	}
 }
 
@@ -620,43 +274,22 @@ void DelayStreamFilter::update(void *data, obs_data_t *settings) {
 }
 
 obs_audio_data *DelayStreamFilter::filter_audio(void *data, obs_audio_data *audio) {
-	return ods::audio::filter_audio_delay_stream(
-		static_cast<DelayStreamData *>(data),
-		audio);
-}
-
-bool DelayStreamFilter::cb_measure_subchannel(obs_properties_t *, obs_property_t *, void *priv) {
-	auto *ctx = static_cast<SubChannelCtx *>(priv);
-	auto *d   = ctx->d;
-	int   i   = ctx->ch;
-	if (d->get_stream_id().empty() || d->sub_channels[i].measure.is_measuring()) return false;
-	if (d->router.client_count(i) == 0) return false;
-	bool ok = d->router.start_measurement(i, d->ping_count_setting.load(std::memory_order_relaxed), PING_INTV_MS);
-	if (ok) d->sub_channels[i].measure.start();
-	d->request_props_refresh_for_tabs(
-		{TAB_SYNC_LATENCY, TAB_FINE_ADJUST},
-		"cb_measure_subchannel");
-	return false;
+	return ods::audio::filter_audio_delay_stream(static_cast<DelayStreamData *>(data), audio);
 }
 
 obs_properties_t *DelayStreamFilter::get_properties(void *data) {
 	obs_properties_t *props = obs_properties_create();
 	if (!data) return props;
 	auto *d = static_cast<DelayStreamData *>(data);
-	// get_properties の再入を検知し、戻りで深さを必ず復元する。
+
 	struct GetPropsDepthGuard {
 		DelayStreamData *d;
 		~GetPropsDepthGuard() {
 			if (d) d->get_props_depth.fetch_sub(1, std::memory_order_acq_rel);
 		}
 	};
-	int                prev_depth = d->get_props_depth.fetch_add(1, std::memory_order_acq_rel);
+	d->get_props_depth.fetch_add(1, std::memory_order_acq_rel);
 	GetPropsDepthGuard depth_guard{d};
-	if (prev_depth > 0) {
-		blog(LOG_INFO, "[obs-delay-stream] get_properties re-entry depth=%d", prev_depth + 1);
-	}
-
-	bool has_sid = !d->get_stream_id().empty();
 
 	{
 		int64_t sync_offset_ns = INT64_MIN;
@@ -664,52 +297,13 @@ obs_properties_t *DelayStreamFilter::get_properties(void *data) {
 		d->last_rendered_audio_sync_offset_ns.store(sync_offset_ns, std::memory_order_relaxed);
 	}
 
-	int active_tab = d->get_active_tab();
 	ods::ui::add_plugin_group(props, d);
 	if (!d->is_warning_only_instance()) {
-		ods::ui::add_tab_selector_row(props, d, active_tab);
-
-		switch (active_tab) {
-		case TAB_PERFORMER_NAMES:
-			ods::ui::channels::add_sub_channels_group(props, d);
-			break;
-		case TAB_TUNNEL:
-			ods::ui::add_tunnel_group(props, d);
-			ods::ui::add_tunnel_next_button_bar(props, d);
-			break;
-		case TAB_AUDIO_STREAMING:
-			ods::ui::add_ws_group(props, d, has_sid);
-			ods::ui::add_stream_group(props, d);
-			ods::ui::add_ws_next_button_bar(props, d, has_sid);
-			break;
-		case TAB_URL_SHARING:
-			ods::ui::url_share::add_url_share_group(props, d);
-			ods::ui::url_share::add_url_share_next_button_bar(props, d);
-			break;
-		case TAB_RTSP_LATENCY:
-			ods::ui::add_master_group(props, d);
-			ods::ui::add_next_tab_button_bar(props, d, TAB_SYNC_LATENCY);
-			break;
-		case TAB_SYNC_LATENCY:
-			ods::ui::add_flow_group(props, d);
-			ods::ui::add_next_tab_button_bar(props, d, TAB_FINE_ADJUST);
-			break;
-		case TAB_FINE_ADJUST: {
-			obs_data_t *s5 = obs_source_get_settings(d->context);
-			auto        vm = ods::viewmodel::DelayViewModel::build(d->delay, s5, d->layout);
-			if (s5) obs_data_release(s5);
-			ods::ui::delay::add_fine_tune_group(props, d, vm);
-			ods::ui::delay::add_live_perf_group(props, d, vm);
-			ods::ui::delay::add_delay_diagram_group(props, d, vm);
-			break;
-		}
-		default:
-			break;
-		}
-	}
-
-	if (!d->is_warning_only_instance()) {
-		schedule_widget_injects_for_tab(d, active_tab);
+		ods::ui::add_master_group(props, d);
+		auto vm = ods::viewmodel::DelayViewModel::build(d->delay);
+		ods::ui::delay::add_fine_tune_group(props, d, vm);
+		ods::ui::delay::add_delay_diagram_group(props, d, vm);
+		schedule_widget_injects(d);
 	}
 
 	return props;
@@ -723,7 +317,7 @@ static struct obs_source_info delay_stream_filter;
 
 static void register_source_info() {
 	memset(&delay_stream_filter, 0, sizeof(delay_stream_filter));
-	delay_stream_filter.id             = "delay_stream_filter";
+	delay_stream_filter.id             = "aunsync_filter";
 	delay_stream_filter.type           = OBS_SOURCE_TYPE_FILTER;
 	delay_stream_filter.output_flags   = OBS_SOURCE_AUDIO;
 	delay_stream_filter.get_name       = DelayStreamFilter::get_name;
@@ -738,8 +332,8 @@ static void register_source_info() {
 bool obs_module_load(void) {
 	register_source_info();
 	obs_register_source(&delay_stream_filter);
-	blog(LOG_INFO, "[obs-delay-stream] v" PLUGIN_VERSION " loaded");
+	blog(LOG_INFO, "[aunsync] v" PLUGIN_VERSION " loaded");
 	return true;
 }
-// 明示的な後処理は不要のため空実装。
+
 void obs_module_unload(void) {}
