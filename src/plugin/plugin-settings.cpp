@@ -7,6 +7,7 @@
 #include "plugin/plugin-utils.hpp"
 
 #include <algorithm>
+#include <cmath>
 
 namespace ods::plugin {
 
@@ -45,6 +46,20 @@ namespace ods::plugin {
 		}
 
 		ods::model::SettingsRepo repo(settings);
+
+		// 計測結果はプローバーキャッシュ (d->rtsp_e2e_measure) を単一の真実とする。
+		// on_result はワーカースレッドで結果をキャッシュし、UI スレッドで settings へ
+		// 永続化するが、その永続化前に get_properties 再構築が走ると modified callback
+		// 経由でここが呼ばれ、未更新の settings で d->delay を 0 に巻き戻してしまう。
+		// 有効なキャッシュがあり settings 側が未反映なら settings へ書き戻して self-heal する。
+		const auto probe = d->rtsp_e2e_measure.result();
+		if (probe.valid) {
+			const int cached_r = std::max(0, static_cast<int>(std::lround(probe.latency_ms)));
+			if (!repo.rtsp_e2e_measured() || repo.measured_rtsp_e2e_ms() != cached_r) {
+				repo.set_measured_rtsp_e2e_ms(cached_r);
+				repo.set_rtsp_e2e_measured(true);
+			}
+		}
 		d->delay.measured_rtsp_e2e_ms = std::max(0, repo.measured_rtsp_e2e_ms());
 		d->delay.rtsp_e2e_measured    = repo.rtsp_e2e_measured();
 		d->delay.avatar_latency_ms    = std::clamp(repo.avatar_latency_ms(), 0, 5000);
