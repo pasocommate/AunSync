@@ -27,10 +27,14 @@ namespace ods::ui::delay {
 			obs_property_t *,
 			obs_data_t *settings) {
 			auto *d = static_cast<DelayStreamData *>(priv);
-			if (!d) return false;
-			if (settings)
-				ods::plugin::apply_settings(d, settings);
-			d->request_props_refresh("avatar_latency_changed");
+			if (!d || !settings) return false;
+
+			// build 時の初期化発火では A が変わらない。適用前後で A が変化したときだけ
+			// 再描画を要求し、§6.1 の get_properties→構築→callback→refresh ループを断つ。
+			const int prev_avatar = d->delay.avatar_latency_ms;
+			ods::plugin::apply_settings(d, settings);
+			if (d->delay.avatar_latency_ms != prev_avatar)
+				d->request_props_refresh("avatar_latency_changed");
 			return false;
 		}
 
